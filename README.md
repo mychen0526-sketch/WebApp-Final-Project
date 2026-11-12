@@ -4,6 +4,8 @@
 
 前端在 `frontend/`，用 React 與 Vite。目前所有資料都是瀏覽器裡的示範狀態，還沒有呼叫後端。後端要做的是把下面這條狀態線存進資料庫，並接上生成與發布。
 
+後端在 `backend/`，用 Python FastAPI 與 Supabase，啟動方式、API 與狀態規則見 [backend/README.md](backend/README.md)。後端以 Milestone 1 的 MVP 為準：英文狀態值、提示詞候選、Threads 與 Instagram；下方的中文狀態、RSS 情報、X 與 Telegram 尚未納入。
+
 ## 怎麼看前端
 
 ```powershell

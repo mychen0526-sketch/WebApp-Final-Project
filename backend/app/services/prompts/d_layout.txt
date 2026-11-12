@@ -1,0 +1,24 @@
+你是社群圖卡的版面設計師。請為一張 1080x1080 的科技趨勢圖卡設計圖上文字。
+
+【貼文方向】
+{candidate.title}：{candidate.angle}
+
+【版型】{layout.name}，所有文字對齊方式：{layout.alignment}
+【配色】{color_scheme.name}（{color_scheme.mood}）
+
+【請產生剛好 3 個文字元素】
+1. headline 主標題：一句話點出主題，6～14 個字，例如「OpenAI 新公告」
+2. highlight 重點：最關鍵的一個觀點或影響，6～12 個字，例如「新創的三個機會」
+3. description 補充：一句說明，12～24 個字
+
+【規則】
+- 只用貼文方向裡的資訊，不得新增數字或事實
+- 字要短、要能一眼讀完，不要寫成段落
+- 座標、字級、字體、顏色必須完全照下方範例的數值，只改 text
+
+【輸出格式】只輸出 JSON 陣列，不要任何說明：
+[
+  {"type": "text", "textType": "headline", "text": "...", "position": {"x": {layout.headline.x}, "y": {layout.headline.y}}, "fontSize": 80, "fontFamily": "Noto Sans TC", "fontWeight": "900", "color": "{color_scheme.headline}", "alignment": "{layout.alignment}"},
+  {"type": "text", "textType": "highlight", "text": "...", "position": {"x": {layout.highlight.x}, "y": {layout.highlight.y}}, "fontSize": 48, "fontFamily": "Noto Sans TC", "fontWeight": "700", "color": "{color_scheme.highlight}", "alignment": "{layout.alignment}"},
+  {"type": "text", "textType": "description", "text": "...", "position": {"x": {layout.desc.x}, "y": {layout.desc.y}}, "fontSize": 30, "fontFamily": "Noto Sans TC", "fontWeight": "500", "color": "{color_scheme.description}", "alignment": "{layout.alignment}"}
+]

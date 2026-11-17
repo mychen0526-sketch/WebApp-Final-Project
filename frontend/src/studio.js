@@ -12,10 +12,10 @@ export const TONES = ['專業分析', '輕鬆分享', '討論互動']
 export const AUDIENCES = ['創業者與科技從業者', '一般大眾', '潛在企業客戶', '學術研究者']
 export const PLATFORMS = ['Threads', 'X', 'Instagram', 'Telegram']
 export const PLATFORM_HINT = {
-  Threads: '話題討論',
-  X: '短文貼文',
-  Instagram: '正方形圖文',
-  Telegram: '頻道圖文',
+  Threads: '話題討論 · 由後端正式發布',
+  X: '短文貼文 · 示範平台，尚未串接',
+  Instagram: '正方形圖文 · 由後端正式發布',
+  Telegram: '頻道圖文 · 示範平台，尚未串接',
 }
 
 export const STYLES = [
@@ -42,9 +42,6 @@ export const STAGES = [
   ['publish', '發布'],
 ]
 
-export const DEFAULT_CONTENT =
-  'AI 正在改變產品商業化的速度。從原型驗證、後端整合到正式上線，今天的創業團隊能更快將想法交付市場。\n\n但真正的競爭力，不只是寫得更快，而是能否持續理解使用者，並將技術轉化成價值。\n\n#人工智慧 #科技趨勢 #產品開發'
-
 export function initialState() {
   return {
     page: 'workspace',
@@ -52,22 +49,23 @@ export function initialState() {
     prompt: '整理近期 AI 產品商業化趨勢，撰寫一篇給創業者看的科技觀察貼文。',
     tone: '專業分析',
     audience: '創業者與科技從業者',
-    content: DEFAULT_CONTENT,
-    title: 'AI 如何加速\n產品商業化？',
+    // editor fields for the post that is open (activeId = backend post id)
+    content: '',
+    igCaption: '',
+    title: '',
+    subtitle: '',
+    canvas: null,
+    background: null,
     style: 0,
     font: 30,
     layout: { image: { x: 50, y: 30 }, text: { x: 50, y: 72 } },
     series: [],
     activeId: null,
+    candidates: [],
+    busy: null,
     platform: 'Threads',
-    platforms: [...PLATFORMS],
-    drafts: [
-      { id: 1, title: 'AI 如何加速產品商業化？', content: DEFAULT_CONTENT, status: '草稿', date: '10/17', layout: { image: { x: 50, y: 30 }, text: { x: 50, y: 72 } }, style: 0, font: 30 },
-      { id: 2, title: '從原型到上市：團隊如何縮短迭代週期', content: '產品開發需要有效率的跨職能協作。', status: '待審核', date: '10/16', layout: { image: { x: 50, y: 30 }, text: { x: 50, y: 72 } }, style: 1, font: 30 },
-      { id: 3, title: '生成式 AI 的最新應用方向', content: '今天來聊聊生成式 AI。', status: '已發布', date: '10/14', when: '2026-10-14 現在', destinations: ['Threads'] },
-      { id: 4, title: '小型團隊的 AI 工作流', content: '先挑一個重複的流程，再決定要不要自動化。', status: '已核准', date: '10/18', layout: { image: { x: 50, y: 30 }, text: { x: 50, y: 72 } }, style: 2, font: 30 },
-      { id: 5, title: '下週的產品觀察', content: '這則已排程，取消後會回到已核准。', status: '已排程', date: '10/19', when: '2026-10-21 10:00', destinations: ['Threads', 'Instagram'], layout: { image: { x: 50, y: 74 }, text: { x: 50, y: 28 } }, style: 0, font: 30 },
-    ],
+    platforms: ['Threads'],
+    drafts: [],
     sources: [
       { title: '生成式 AI 加速企業產品開發流程', type: '產業觀察', origin: '示範資料 · Tech Insights', date: '2026/10/16', summary: '整理企業如何使用生成式 AI 進行開發、設計與業務流程。' },
       { title: 'AI Agent 在新創公司的應用機會', type: '科技新聞', origin: '示範資料 · AI Daily', date: '2026/10/15', summary: '探討 Agent 技術如何協助中小型團隊擴大交付能力。' },
@@ -78,13 +76,19 @@ export function initialState() {
     feedback: [],
     company: 'ORBIT / LAB',
     themeName: '科技深藍',
+    templates: [],
+    templateId: null,
+    removedTemplates: {},
+    accounts: [],
+    health: null,
   }
 }
 
-export function platformCaption(content, platform) {
-  let text = content
+// Threads and Instagram show the captions the backend wrote; X and Telegram are demo previews.
+export function platformCaption(state, platform) {
+  if (platform === 'Instagram') return state.igCaption || state.content
+  let text = state.content
   if (platform === 'X' && text.length > 240) text = `${text.slice(0, 237)}…`
-  if (platform === 'Instagram') text = `科技趨勢分享\n\n${text}`
   return text
 }
 
@@ -96,7 +100,7 @@ export function scanText(sensitive, title, content) {
 }
 
 export function safetyScan(state) {
-  return scanText(state.sensitive, state.title, state.content)
+  return scanText(state.sensitive, `${state.title}\n${state.subtitle || ''}`, `${state.content}\n${state.igCaption || ''}`)
 }
 
 export function activeDraft(state) {
@@ -105,10 +109,26 @@ export function activeDraft(state) {
 
 export function stageEnabled(state, stage) {
   const status = activeDraft(state)?.status
-  if (stage === 'write' || stage === 'edit') return !status || status === '草稿'
+  if (stage === 'write') return !status || status === '草稿' || status === '生成失敗' || status === '生成中'
+  if (stage === 'edit') return status === '草稿'
   if (stage === 'review') return status === '待審核'
-  if (stage === 'publish') return status === '已核准' || status === '已排程' || status === '已發布'
+  if (stage === 'publish') return ['已核准', '已排程', '發布中', '已發布', '部分發布', '發布失敗'].includes(status)
   return false
+}
+
+export function templateOf(state, id = state.templateId) {
+  return state.templates.find((item) => item.id === id) || null
+}
+
+// 已移除的模板仍要能畫出用過它的內容
+export function templateUrl(state, id = state.templateId) {
+  if (!id) return null
+  return templateOf(state, id)?.url || state.removedTemplates?.[id] || null
+}
+
+// What sits behind the text on the card: a chosen template, else the AI picture, else the gradient.
+export function cardBackground(state) {
+  return templateUrl(state) || state.background || null
 }
 
 export function pageTitle(page) {

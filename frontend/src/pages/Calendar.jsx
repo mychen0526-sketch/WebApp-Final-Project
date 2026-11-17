@@ -1,26 +1,46 @@
+import { useState } from 'react'
 import { useStudio } from '../context.js'
 
 const WEEK = ['一', '二', '三', '四', '五', '六', '日']
 
 export function CalendarPage() {
   const { state, openItem, cancelSchedule } = useStudio()
-  const scheduled = state.drafts.filter((item) => item.status === '已排程')
-  const cells = Array.from({ length: 35 }, (_, index) => {
-    const day = index - 3
-    return day > 0 && day <= 31 ? day : null
+  const today = new Date()
+  const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1))
+  const scheduled = state.drafts
+    .filter((item) => item.status === '已排程' && item.scheduledAt)
+    .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt))
+  const year = month.getFullYear()
+  const m = month.getMonth()
+  const lead = (month.getDay() + 6) % 7 // Monday first
+  const days = new Date(year, m + 1, 0).getDate()
+  const cells = Array.from({ length: Math.ceil((lead + days) / 7) * 7 }, (_, index) => {
+    const day = index - lead + 1
+    return day > 0 && day <= days ? day : null
   })
+  const sameDay = (iso, day) => {
+    const d = new Date(iso)
+    return d.getFullYear() === year && d.getMonth() === m && d.getDate() === day
+  }
+  const isToday = (day) => today.getFullYear() === year && today.getMonth() === m && today.getDate() === day
 
   return (
     <div className="grid-2">
       <article className="card">
-        <h3>2026 年 10 月</h3>
-        <p className="sub">只有已排程、還沒發出的內容會出現在這裡。</p>
+        <div className="row" style={{ justifyContent: 'space-between' }}>
+          <h3>{year} 年 {m + 1} 月</h3>
+          <div className="row">
+            <button className="btn" type="button" onClick={() => setMonth(new Date(year, m - 1, 1))}>‹</button>
+            <button className="btn" type="button" onClick={() => setMonth(new Date(year, m + 1, 1))}>›</button>
+          </div>
+        </div>
+        <p className="sub">只有已排程、還沒發出的內容會出現在這裡。時間到時後端排程器會自動發布。</p>
         <div className="cal">
           {WEEK.map((day) => <i key={day}>{day}</i>)}
           {cells.map((day, index) => {
-            const events = day ? scheduled.filter((item) => Number(String(item.when).slice(8, 10)) === day) : []
+            const events = day ? scheduled.filter((item) => sameDay(item.scheduledAt, day)) : []
             return (
-              <div key={index} className={day ? `day on${day === 20 ? ' today' : ''}` : 'day'}>
+              <div key={index} className={day ? `day on${isToday(day) ? ' today' : ''}` : 'day'}>
                 {day || ''}
                 {events.map((item) => <div className="event" key={item.id}>{item.title.slice(0, 10)}</div>)}
               </div>

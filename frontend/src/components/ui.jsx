@@ -1,6 +1,6 @@
 import { MENU, reviewCount } from '../studio.js'
 
-export function Shell({ state, onNavigate, children }) {
+export function Shell({ state, user, onNavigate, onLogout, children }) {
   const count = reviewCount(state)
   return (
     <div className="app">
@@ -22,10 +22,10 @@ export function Shell({ state, onNavigate, children }) {
         </nav>
         <div className="side-foot">
           <div className="who">
-            <div className="avatar">YT</div>
-            <div>
-              <b>專題展示帳號</b>
-              示範模式
+            <div className="avatar">{(user?.email || '?').slice(0, 2).toUpperCase()}</div>
+            <div style={{ minWidth: 0 }}>
+              <b style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.email}</b>
+              <button type="button" className="link" onClick={onLogout}>登出</button>
             </div>
           </div>
         </div>

@@ -53,7 +53,8 @@ def create_app(services: Services | None = None, app_settings: Settings | None =
         return {
             "ok": True,
             "database": "supabase" if cfg.use_supabase else "memory",
-            "ai": "mock" if cfg.ai_is_mock else "gemini",
+            "ai": "mock" if cfg.ai_is_mock else "rap",
+            "image": cfg.image_backend,
             "publish": "mock" if cfg.mock_publish else "live",
         }
 

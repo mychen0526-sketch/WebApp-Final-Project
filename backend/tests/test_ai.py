@@ -11,12 +11,10 @@ def test_prompts_fill_every_placeholder():
         ai.prompt_candidates("目標", None),
         ai.prompt_captions("目標", "輕鬆分享", None, cand, "short"),
         ai.prompt_card_texts(cand, layout, scheme),
-        ai.prompt_image(cand, "isometric", layout, scheme),
     ]
     for p in prompts:
         for leftover in ("{goal}", "{tone}", "{candidate.", "{layout.", "{color_scheme.", "{empty_area}", "{extra}", "{audience}"):
             assert leftover not in p
-    assert "left half" in prompts[3] and "isometric" in prompts[3]
     # prompt D example must still be valid JSON after filling
     example = prompts[2][prompts[2].rindex("[") :]
     assert len(json.loads(example.replace("...", "x"))) == 3

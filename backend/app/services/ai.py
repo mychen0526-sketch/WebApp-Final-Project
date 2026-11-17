@@ -1,4 +1,6 @@
-"""LLM and image generation: Gemini, plus a deterministic mock for development and tests.
+"""Text generation on TAIWAN AI RAP, plus a deterministic mock for development and tests.
+
+The card background image is made by FLUX on fal.ai (images.py).
 
 Prompts live in services/prompts/ (one file per prompt, A–D, see the Notion spec §8).
 Placeholders look like {goal} or {candidate.title}; they are replaced by plain string
@@ -6,11 +8,13 @@ substitution because the prompts also contain literal JSON braces.
 """
 import json
 import logging
+import re
 import struct
 import zlib
 from pathlib import Path
 from typing import Protocol
 
+import httpx
 from pydantic import TypeAdapter, ValidationError
 
 from ..schemas import Candidate, Captions, TextElement
@@ -74,18 +78,6 @@ def prompt_card_texts(candidate, layout, scheme) -> str:
     return render("d_layout.txt", {**candidate_vars(candidate), **design.layout_vars(layout), **design.scheme_vars(scheme)})
 
 
-def prompt_image(candidate, visual_style, layout, scheme) -> str:
-    return render(
-        "c_image.txt",
-        {
-            **candidate_vars(candidate),
-            "visual_style": design.VISUAL_STYLES[visual_style],
-            **design.layout_vars(layout),
-            **design.scheme_vars(scheme),
-        },
-    )
-
-
 def enforce_layout(texts: list[TextElement], layout: design.Layout, scheme: design.ColorScheme) -> list[TextElement]:
     """Prompt D asks the model to copy coordinates/colors verbatim; enforce them anyway."""
     spec = {
@@ -112,32 +104,66 @@ def enforce_layout(texts: list[TextElement], layout: design.Layout, scheme: desi
     ]
 
 
-# ---------------------------------------------------------------- Gemini
-class GeminiAI:
-    def __init__(self, api_key: str, text_model: str, image_model: str, timeout_seconds: int = 90) -> None:
-        from google import genai
-        from google.genai import types
+# ---------------------------------------------------------------- TAIWAN AI RAP
+def extract_json(text: str):
+    """Parse the first JSON array/object in a chat reply (models sometimes wrap it in ``` fences or prose)."""
+    text = (text or "").strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fence:
+        text = fence.group(1).strip()
+    starts = [i for i in (text.find("["), text.find("{")) if i >= 0]
+    if not starts:
+        raise json.JSONDecodeError("no JSON found", text, 0)
+    value, _ = json.JSONDecoder().raw_decode(text[min(starts):])
+    return value
 
-        self._types = types
-        self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=timeout_seconds * 1000))
-        self.text_model = text_model
-        self.image_model = image_model
+
+class RapAI:
+    """Text generation on TAIWAN AI RAP (NCHC), an OpenAI-compatible `/chat/completions` API.
+
+    JSON mode (`response_format`) is not used: it only allows objects and some prompts expect arrays,
+    so the prompt asks for JSON and `extract_json` reads it back.
+    """
+
+    def __init__(self, api_key: str, base_url: str, model: str, timeout_seconds: int = 90) -> None:
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout_seconds
+
+    def _chat(self, prompt: str, temperature: float = 0.7) -> str:
+        body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": 4096,
+        }
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/chat/completions",
+                json=body,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=self.timeout,
+            )
+        except httpx.HTTPError as exc:
+            raise AIError(f"LLM 呼叫失敗：{exc}") from exc
+        if resp.status_code == 401:
+            raise AIError("LLM 呼叫失敗：RAP API 金鑰無效（401）")
+        if resp.status_code >= 400:
+            raise AIError(f"LLM 呼叫失敗（RAP {resp.status_code}）：{resp.text[:300]}")
+        try:
+            return resp.json()["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise AIError(f"LLM 回應格式無法解析：{resp.text[:300]}") from exc
 
     def _json(self, prompt: str, adapter: TypeAdapter, attempts: int = 2):
         last: Exception | None = None
         for _ in range(attempts):
             try:
-                resp = self.client.models.generate_content(
-                    model=self.text_model,
-                    contents=prompt,
-                    config=self._types.GenerateContentConfig(response_mime_type="application/json"),
-                )
-                return adapter.validate_python(json.loads(resp.text or ""))
+                return adapter.validate_python(extract_json(self._chat(prompt)))
             except (json.JSONDecodeError, ValidationError) as exc:
-                log.warning("Gemini returned unusable JSON, retrying: %s", exc)
+                log.warning("RAP returned unusable JSON, retrying: %s", exc)
                 last = exc
-            except Exception as exc:  # API / network error
-                raise AIError(f"LLM 呼叫失敗：{exc}") from exc
         raise AIError(f"LLM 輸出格式錯誤：{last}")
 
     def candidates(self, goal, tone):
@@ -153,24 +179,16 @@ class GeminiAI:
         texts = self._json(prompt_card_texts(candidate, layout, scheme), TypeAdapter(list[TextElement]))
         return enforce_layout(texts, layout, scheme)
 
-    def image(self, candidate, visual_style, layout, scheme):
-        types = self._types
+    def scene(self, candidate: Candidate, visual_style: str) -> str | None:
+        """One English sentence describing the picture, for the English-only image model (FLUX)."""
+        prompt = render("c_scene.txt", {**candidate_vars(candidate), "visual_style": design.VISUAL_STYLES[visual_style]})
         try:
-            resp = self.client.models.generate_content(
-                model=self.image_model,
-                contents=prompt_image(candidate, visual_style, layout, scheme),
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(aspect_ratio="1:1"),
-                ),
-            )
-        except Exception as exc:
-            raise AIError(f"圖片生成失敗：{exc}") from exc
-        for cand in resp.candidates or []:
-            for part in (cand.content.parts if cand.content else None) or []:
-                if part.inline_data and part.inline_data.data:
-                    return part.inline_data.data
-        raise AIError("圖片生成沒有回傳圖片")
+            text = self._chat(prompt, temperature=0.9)
+        except AIError as exc:  # the image can still be made from the visual style alone
+            log.warning("scene prompt failed, falling back to style only: %s", exc)
+            return None
+        lines = [line.strip().strip('"') for line in text.strip().splitlines() if line.strip()]
+        return lines[0][:400] if lines else None
 
 
 # ---------------------------------------------------------------- Mock
@@ -214,6 +232,9 @@ class MockAI:
                         fontFamily="Noto Sans TC", fontWeight="500", color="#fff", alignment="center"),
         ]
         return enforce_layout(raw, layout, scheme)
+
+    def scene(self, candidate, visual_style):
+        return None
 
     def image(self, candidate, visual_style, layout, scheme):
         self._maybe_fail()

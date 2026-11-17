@@ -6,7 +6,7 @@
 | --- | --- |
 | API | Python 3.12、FastAPI（RESTful） |
 | 資料庫／登入／圖片 | Supabase：PostgreSQL、Auth（JWT）、Storage（公開 bucket `post-images`） |
-| AI | Gemini：文字 `gemini-2.5-flash`（JSON 輸出）、圖片 `gemini-2.5-flash-image` |
+| AI | 文字：TAIWAN AI RAP（國網中心，OpenAI 相容 API，預設 `gemma-4-31B-it`）；圖卡底圖：fal.ai 的 FLUX.1 [schnell]（約 US$0.003／張） |
 | 社群 | Threads API、Instagram API with Instagram Login |
 | 部署 | Dockerfile |
 
@@ -27,8 +27,9 @@ copy .env.example .env          # 預設：記憶體資料庫、模擬 AI、模�
 ## 接上真的服務
 
 1. **Supabase**：建立專案，在 SQL Editor 依序執行 `supabase/migrations/0001_init.sql`（建 6 張表、RLS、`post-images` bucket）與 `0002_templates.sql`（圖片模板）。把 Project URL 和 service role key 填進 `.env` 的 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`。專案若仍用舊版 HS256 JWT secret，再填 `SUPABASE_JWT_SECRET`；新專案走 JWKS，不必填。
-2. **Gemini**：到 Google AI Studio 取得 API key，填 `GEMINI_API_KEY`。沒填就自動用模擬輸出。
-3. **Threads／Instagram**：在 Meta 開發者後台建立 App，填 `THREADS_APP_ID/SECRET`、`INSTAGRAM_APP_ID/SECRET`，並把 `.env` 裡的 redirect URI 加進 App 設定。然後設 `MOCK_PUBLISH=false`。注意：平台要從**公開網址**抓圖，所以真的發布一定要用 Supabase Storage，記憶體模式的圖片網址平台抓不到。
+2. **文字（TAIWAN AI RAP）**：在 https://portal.genai.nchc.org.tw 建立 API Key，填 `RAP_API_KEY`。`RAP_BASE_URL` 預設 `https://portal.genai.nchc.org.tw/api/v1`，模型用 `RAP_TEXT_MODEL` 換（可用的 ID 查 `GET {RAP_BASE_URL}/models`）。沒填金鑰就用模擬文案。
+3. **圖卡底圖（fal.ai）**：填 `FAL_API_KEY`。底圖不含文字，文字由前端疊上，所以用最便宜的 FLUX.1 [schnell] 就夠。FLUX 只懂英文，會先請 RAP 把主題寫成一句英文畫面描述（`prompts/c_scene.txt`），再套 `prompts/c_image_flux.txt`。沒填金鑰就用漸層底圖。`/health` 的 `ai`、`image` 欄位會顯示實際使用的服務。
+4. **Threads／Instagram**：在 Meta 開發者後台建立 App，填 `THREADS_APP_ID/SECRET`、`INSTAGRAM_APP_ID/SECRET`，並把 `.env` 裡的 redirect URI 加進 App 設定。然後設 `MOCK_PUBLISH=false`。注意：平台要從**公開網址**抓圖，所以真的發布一定要用 Supabase Storage，記憶體模式的圖片網址平台抓不到。
 
 前端登入：用 `@supabase/supabase-js` 登入後，把 `session.access_token` 放在每個請求的 `Authorization: Bearer <token>`。
 
@@ -117,7 +118,8 @@ app/
   repo/              supabase_repo（正式）、memory_repo（測試與離線開發）
   services/
     prompts/         Prompt A～D，一個 prompt 一個檔案
-    ai.py            Gemini 與模擬 AI
+    ai.py            TAIWAN AI RAP 文字生成與模擬 AI
+    images.py        fal.ai FLUX 底圖
     design.py        4 種版型與 4 種配色（與前端 STYLES 對應）
     generation.py    生成流程
     publishing.py    分平台發布與結果

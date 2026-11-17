@@ -656,7 +656,7 @@ function Studio({ user, onLogout }) {
     ? `連線到後端 ${API_BASE}…`
     : health.error
       ? `連不到後端 ${API_BASE}，請先啟動 uvicorn。`
-      : `已連線後端 · AI：${health.ai === 'gemini' ? 'Gemini' : '模擬'} · 發布：${health.publish === 'live' ? '正式' : '模擬'}${DEV_MODE ? ' · 開發模式' : ''}`
+      : `已連線後端 · 文字：${health.ai === 'rap' ? 'AI RAP' : '模擬'} · 圖片：${health.image === 'fal' ? 'FLUX（fal）' : '漸層底圖'} · 發布：${health.publish === 'live' ? '正式' : '模擬'}${DEV_MODE ? ' · 開發模式' : ''}`
 
   return (
     <StudioContext.Provider value={studio}>

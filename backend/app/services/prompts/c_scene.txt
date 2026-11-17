@@ -1,0 +1,10 @@
+You write prompts for an image model that only understands English.
+
+Post topic (Traditional Chinese): {candidate.title} — {candidate.angle}
+Visual style: {visual_style}
+
+Describe ONE abstract or conceptual visual metaphor for this topic in a single English sentence of 15–30 words.
+Rules:
+- Describe only objects, shapes, light and composition.
+- Do not mention words, letters, signs, screens with writing, logos, brand names, company names or real people.
+- Output the sentence only, no quotes, no explanation.

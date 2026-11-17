@@ -1,10 +1,11 @@
-"""Wires settings to concrete implementations (Supabase vs memory, Gemini vs mock, real vs mock publish)."""
+"""Wires settings to concrete implementations (Supabase vs memory, RAP/fal vs mock, real vs mock publish)."""
 from dataclasses import dataclass, field
 
 from .config import Settings
 from .repo.base import Repo
 from .repo.memory_repo import MemoryRepo
-from .services.ai import AIService, GeminiAI, MockAI
+from .services.ai import AIService, MockAI, RapAI
+from .services.images import FalFlux, FluxImageAI
 from .services.platforms.base import Publisher
 from .services.platforms.instagram import InstagramPublisher
 from .services.platforms.mock import MockPublisher
@@ -21,6 +22,18 @@ class Services:
     publishers: dict[str, Publisher] = field(default_factory=dict)
 
 
+def build_ai(settings: Settings) -> AIService:
+    """Text from TAIWAN AI RAP (or mock); card background from fal (or a gradient)."""
+    text = (
+        MockAI()
+        if settings.ai_is_mock
+        else RapAI(settings.rap_api_key, settings.rap_base_url, settings.rap_text_model, settings.ai_timeout_seconds)
+    )
+    if settings.image_backend == "fal":
+        return FluxImageAI(text, FalFlux(settings.fal_api_key, settings.fal_image_model, settings.ai_timeout_seconds))
+    return text if isinstance(text, MockAI) else FluxImageAI(text, None)
+
+
 def build_services(settings: Settings) -> Services:
     if settings.use_supabase:
         from supabase import create_client
@@ -34,13 +47,7 @@ def build_services(settings: Settings) -> Services:
         repo = MemoryRepo()
         storage = MemoryStorage(settings.public_base_url)
 
-    ai: AIService = (
-        MockAI()
-        if settings.ai_is_mock
-        else GeminiAI(
-            settings.gemini_api_key, settings.gemini_text_model, settings.gemini_image_model, settings.ai_timeout_seconds
-        )
-    )
+    ai: AIService = build_ai(settings)
 
     if settings.mock_publish:
         publishers: dict[str, Publisher] = {"threads": MockPublisher("threads"), "instagram": MockPublisher("instagram")}

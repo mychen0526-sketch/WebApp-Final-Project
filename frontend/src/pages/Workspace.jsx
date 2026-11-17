@@ -170,7 +170,7 @@ function WriteStage() {
         ) : (
           <article className="card preview-empty">
             <h3>{active?.status === '生成中' ? 'AI 生成中…' : '預覽會出現在這裡'}</h3>
-            <p className="sub">{active?.status === '生成中' ? 'Gemini 正在寫文案和畫圖卡，完成後會自動跳到編輯。' : '挑一個方向之後，這裡會顯示圖卡和各平台的文字。'}</p>
+            <p className="sub">{active?.status === '生成中' ? 'AI 正在寫文案和畫圖卡，完成後會自動跳到編輯。' : '挑一個方向之後，這裡會顯示圖卡和各平台的文字。'}</p>
           </article>
         )}
         <article className="card">

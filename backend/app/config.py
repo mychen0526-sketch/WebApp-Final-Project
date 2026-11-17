@@ -13,11 +13,15 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str = ""  # only needed for projects that still sign JWTs with HS256
     storage_bucket: str = "post-images"
 
-    # Gemini
-    gemini_api_key: str = ""
-    gemini_text_model: str = "gemini-2.5-flash"
-    gemini_image_model: str = "gemini-2.5-flash-image"
+    # Text: TAIWAN AI RAP (NCHC), OpenAI-compatible chat completions
+    rap_api_key: str = ""
+    rap_base_url: str = "https://portal.genai.nchc.org.tw/api/v1"
+    rap_text_model: str = "gemma-4-31B-it"
     ai_timeout_seconds: int = 90
+
+    # Card background: FLUX.1 [schnell] on fal.ai (~US$0.003/image). No key → plain gradient.
+    fal_api_key: str = ""
+    fal_image_model: str = "fal-ai/flux/schnell"
 
     # Mock switches: run the whole flow without external services
     mock_ai: bool = False
@@ -55,7 +59,11 @@ class Settings(BaseSettings):
 
     @property
     def ai_is_mock(self) -> bool:
-        return self.mock_ai or not self.gemini_api_key
+        return self.mock_ai or not self.rap_api_key
+
+    @property
+    def image_backend(self) -> str:
+        return "fal" if self.fal_api_key and not self.mock_ai else "mock"
 
 
 @lru_cache

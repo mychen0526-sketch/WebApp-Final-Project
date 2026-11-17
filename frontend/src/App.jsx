@@ -13,7 +13,7 @@ import { ReviewPage } from './pages/Review.jsx'
 import { SettingsPage } from './pages/Settings.jsx'
 import { TemplatesPage } from './pages/Templates.jsx'
 import { WorkspacePage } from './pages/Workspace.jsx'
-import { activeDraft, cardBackground, initialState, pageTitle, STAGES, stageEnabled, STYLES, templateOf } from './studio.js'
+import { activeDraft, cardBackground, initialState, pageTitle, stageEnabled, STYLES, templateOf } from './studio.js'
 
 const PAGES = {
   workspace: WorkspacePage,
@@ -653,23 +653,18 @@ function Studio({ user, onLogout }) {
   const active = activeDraft(state)
   const health = state.health
   const note = !health
-    ? `連線到後端 ${API_BASE}…`
+    ? '連線後端中…'
     : health.error
-      ? `連不到後端 ${API_BASE}，請先啟動 uvicorn。`
-      : `已連線後端 · 文字：${health.ai === 'rap' ? 'AI RAP' : '模擬'} · 圖片：${health.image === 'fal' ? 'FLUX（fal）' : '漸層底圖'} · 發布：${health.publish === 'live' ? '正式' : '模擬'}${DEV_MODE ? ' · 開發模式' : ''}`
+      ? '後端未連線，請先啟動服務'
+      : `${health.ai === 'rap' ? 'AI 文案' : '模擬文案'} · ${health.image === 'fal' ? 'FLUX 圖' : '漸層圖'} · ${health.publish === 'live' ? '正式發布' : '模擬發布'}`
 
   return (
     <StudioContext.Provider value={studio}>
       <Shell state={state} user={user} onNavigate={studio.navigate} onLogout={onLogout}>
         <Top kicker="Orbit Studio" title={pageTitle(state.page)} note={note}>
-          {state.page === 'workspace' ? (
-            <>
-              <span className="chip">{STAGES.find(([id]) => id === state.stage)?.[1] || '撰寫'}</span>
-              <span className="chip">{active?.status || '尚未存檔'}</span>
-            </>
-          ) : (
-            <span className="chip">{state.themeName}</span>
-          )}
+          {state.page === 'workspace' && active ? (
+            <span className="chip">{active.status}</span>
+          ) : null}
         </Top>
         <Page />
       </Shell>

@@ -24,8 +24,8 @@ export function LibraryPage() {
       <article className="card">
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div>
-            <h3>全部內容</h3>
-            <p className="sub">存在 Supabase 的所有貼文。草稿可以改、可以刪；送審之後只能審核、發布或取消排程。</p>
+            <h3>我的貼文</h3>
+            <p className="sub">依狀態篩選。草稿可改可刪；送審後只能審核、發布或取消排程。</p>
           </div>
           <div className="row">
             <button type="button" className="btn" onClick={refreshPosts}>重新整理</button>

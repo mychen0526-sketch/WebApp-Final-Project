@@ -3,7 +3,20 @@ import { DragCanvas } from '../components/DragCanvas.jsx'
 import { Modal } from '../components/ui.jsx'
 import { useStudio } from '../context.js'
 import { defaultScheduleInput, isRealPlatform, PLATFORM_NAME } from '../lib/posts.js'
-import { activeDraft, AUDIENCES, cardBackground, layoutPreset, PLATFORM_HINT, PLATFORMS, platformCaption, safetyScan, STAGES, stageEnabled, STYLES, TONES } from '../studio.js'
+import {
+  activeDraft,
+  AUDIENCES,
+  cardBackground,
+  layoutPreset,
+  PLATFORM_HINT,
+  PLATFORMS,
+  platformCaption,
+  safetyScan,
+  STAGES,
+  stageEnabled,
+  STYLES,
+  TONES,
+} from '../studio.js'
 
 const THREADS_LIMIT = 500
 const BUSY_TEXT = {
@@ -38,7 +51,7 @@ function StageBar() {
           disabled={!stageEnabled(state, id)}
           onClick={() => goStage(id)}
         >
-          0{index + 1} {label}
+          {index + 1} {label}
         </button>
       ))}
       {state.activeId ? (
@@ -67,52 +80,75 @@ function Canvas({ draggable, compact = false }) {
   )
 }
 
-function Preview() {
+function Preview({ platforms = PLATFORMS }) {
   const { state, patch } = useStudio()
+  const current = platforms.includes(state.platform) ? state.platform : platforms[0]
   return (
-    <article className="card">
+    <div className="preview-pane">
       <div className="tabs">
-        {PLATFORMS.map((name) => (
-          <button key={name} type="button" className={state.platform === name ? 'on' : ''} onClick={() => patch({ platform: name })}>{name}</button>
+        {platforms.map((name) => (
+          <button
+            key={name}
+            type="button"
+            className={current === name ? 'on' : ''}
+            onClick={() => patch({ platform: name })}
+          >
+            {name}{isRealPlatform(name) ? '' : ' · 示範'}
+          </button>
         ))}
       </div>
-      <div className="caption">{platformCaption(state, state.platform) || '還沒有內文'}</div>
-      <p className="meta" style={{ marginTop: 8 }}>{PLATFORM_HINT[state.platform]}</p>
-    </article>
-  )
-}
-
-function Candidates() {
-  const { state, pickCandidate } = useStudio()
-  if (!state.candidates.length) return null
-  return (
-    <div className="candidates">
-      <p className="meta">AI 提出的 3 個方向，挑一個開始生成：</p>
-      {state.candidates.map((item) => (
-        <button key={item.title} type="button" className="candidate" disabled={Boolean(state.busy)} onClick={() => pickCandidate(item)}>
-          <b>{item.title}</b>
-          <span>{item.angle}</span>
-          <span>開頭：{item.hook}</span>
-        </button>
-      ))}
+      <div className="caption">{platformCaption(state, current) || '還沒有內文'}</div>
+      <p className="meta" style={{ marginTop: 8 }}>{PLATFORM_HINT[current]}</p>
     </div>
   )
 }
 
 function WriteStage() {
-  const { state, patch, generate, runBatch, openSeries, goStage, startFresh } = useStudio()
+  const { state, patch, generate, runBatch, openSeries, goStage, startFresh, pickCandidate } = useStudio()
   const [count, setCount] = useState(3)
+  const [showMore, setShowMore] = useState(false)
   const series = state.series.map((id) => state.drafts.find((item) => item.id === id)).filter(Boolean)
   const active = activeDraft(state)
+  const picking = state.candidates.length > 0 && !active
+
+  if (picking) {
+    return (
+      <section className="write-focus">
+        <div className="write-head">
+          <h3>挑一個方向</h3>
+          <p className="sub">選一則後會開始寫文案與圖卡。</p>
+        </div>
+        <div className="candidate-grid">
+          {state.candidates.map((item) => (
+            <button key={item.title} type="button" className="candidate" disabled={Boolean(state.busy)} onClick={() => pickCandidate(item)}>
+              <b>{item.title}</b>
+              <span>{item.angle}</span>
+              <span>開頭：{item.hook}</span>
+            </button>
+          ))}
+        </div>
+        <Busy />
+        <div className="row" style={{ marginTop: 16 }}>
+          <button className="btn" type="button" disabled={Boolean(state.busy)} onClick={() => patch({ candidates: [] })}>回到輸入</button>
+          <button className="btn soft" type="button" disabled={Boolean(state.busy)} onClick={generate}>再給一組方向</button>
+        </div>
+      </section>
+    )
+  }
 
   return (
-    <div className="grid-2">
-      <article className="card">
+    <div className="grid-write">
+      <article className="surface write-main">
         <h3>這篇要講什麼</h3>
-        <p className="sub">輸入目標 → AI 提出 3 個方向 → 挑一個 → AI 寫兩個平台的文案並產生圖卡。</p>
+        <p className="sub">寫下主題，產生三個方向後再挑一個。</p>
         <label className="field">
           主題或貼文方向
-          <textarea value={state.prompt} onChange={(event) => patch({ prompt: event.target.value })} />
+          <textarea
+            className="prompt-area"
+            value={state.prompt}
+            onChange={(event) => patch({ prompt: event.target.value })}
+            placeholder="例如：整理近期 AI 產品商業化趨勢，給創業者看"
+          />
         </label>
         <div className="row" style={{ marginTop: 12 }}>
           {TONES.map((tone) => (
@@ -121,73 +157,72 @@ function WriteStage() {
           <select value={state.audience} onChange={(event) => patch({ audience: event.target.value })} style={{ width: 'auto' }}>
             {[...new Set([state.audience, ...AUDIENCES])].map((item) => <option key={item}>{item}</option>)}
           </select>
-          <button className="btn primary" type="button" disabled={Boolean(state.busy)} onClick={generate}>產生 3 個方向</button>
         </div>
-        <Candidates />
         <Busy />
-        <div className="row" style={{ marginTop: 12 }}>
-          <label className="field" style={{ width: 96 }}>
-            系列則數
-            <input
-              type="number"
-              min="2"
-              max="3"
-              value={count}
-              onChange={(event) => setCount(Math.max(2, Math.min(3, Number(event.target.value) || 2)))}
-            />
-          </label>
-          <button className="btn soft" type="button" disabled={Boolean(state.busy)} onClick={() => runBatch(count)}>一次生成系列</button>
+        {active?.status === '生成失敗' ? <p className="notice bad" style={{ marginTop: 12 }}>生成失敗：{active.error}</p> : null}
+        <div className="action-bar">
+          <button className="btn" type="button" onClick={startFresh}>清空重來</button>
+          {active?.status === '草稿' ? (
+            <button className="btn primary" type="button" onClick={() => goStage('edit')}>下一步，去編輯</button>
+          ) : (
+            <button className="btn primary" type="button" disabled={Boolean(state.busy) || !state.prompt.trim()} onClick={generate}>
+              產生 3 個方向
+            </button>
+          )}
         </div>
-        {series.length > 0 ? (
-          <div className="series">
-            <p className="meta">每個方向各一則。點一則，右邊預覽會換成那一則。</p>
-            {series.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={state.activeId === item.id ? 'series-card on' : 'series-card'}
-                onClick={() => openSeries(item)}
-              >
-                <b>{item.title}</b>
-                <span>{item.status === '草稿' ? item.content.split('\n')[0] : item.status}</span>
-              </button>
-            ))}
+        <button type="button" className="link more-toggle" onClick={() => setShowMore((value) => !value)}>
+          {showMore ? '收起進階選項' : '進階：一次生成系列'}
+        </button>
+        {showMore ? (
+          <div className="more-panel">
+            <p className="meta">會依 3 個方向各生成一則草稿，仍可在內容庫裡分開編輯。</p>
+            <div className="row" style={{ marginTop: 8 }}>
+              <label className="field" style={{ width: 96 }}>
+                則數
+                <input
+                  type="number"
+                  min="2"
+                  max="3"
+                  value={count}
+                  onChange={(event) => setCount(Math.max(2, Math.min(3, Number(event.target.value) || 2)))}
+                />
+              </label>
+              <button className="btn soft" type="button" disabled={Boolean(state.busy)} onClick={() => runBatch(count)}>一次生成系列</button>
+            </div>
+            {series.length > 0 ? (
+              <div className="series" style={{ marginTop: 12 }}>
+                {series.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={state.activeId === item.id ? 'series-card on' : 'series-card'}
+                    onClick={() => openSeries(item)}
+                  >
+                    <b>{item.title}</b>
+                    <span>{item.status === '草稿' ? item.content.split('\n')[0] : item.status}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
-        {active?.status === '生成失敗' ? <p className="notice bad" style={{ marginTop: 12 }}>生成失敗：{active.error}</p> : null}
-        <div className="row" style={{ marginTop: 16 }}>
-          <button className="btn" type="button" onClick={startFresh}>另開一篇</button>
-          <button className="btn primary" type="button" disabled={active?.status !== '草稿'} onClick={() => goStage('edit')}>下一步，去編輯</button>
-        </div>
       </article>
       <section className="stack">
         {active && active.status !== '生成中' ? (
           <>
             <Canvas compact />
-            <p className="meta">這是目前這則的大概樣子。位置和字級要到編輯階段才能調。</p>
-            <Preview />
+            <p className="meta">圖卡預覽</p>
+            <Preview platforms={['Threads', 'Instagram']} />
           </>
         ) : (
-          <article className="card preview-empty">
-            <h3>{active?.status === '生成中' ? 'AI 生成中…' : '預覽會出現在這裡'}</h3>
-            <p className="sub">{active?.status === '生成中' ? 'AI 正在寫文案和畫圖卡，完成後會自動跳到編輯。' : '挑一個方向之後，這裡會顯示圖卡和各平台的文字。'}</p>
+          <article className="preview-empty">
+            <h3>{active?.status === '生成中' ? '生成中…' : '圖卡預覽'}</h3>
+            <p className="sub">
+              {active?.status === '生成中' ? '完成後會進編輯。' : '選好方向後會出現在這裡。'}
+            </p>
+            <Busy />
           </article>
         )}
-        <article className="card">
-          <h3>參考來源</h3>
-          <p className="sub">示範摘要（趨勢情報中心尚未串接新聞來源）。</p>
-          <div className="list">
-            {state.sources.slice(0, 2).map((source) => (
-              <div className="item" key={source.title}>
-                <div>
-                  <b>{source.title}</b>
-                  <div className="meta">{source.type} · {source.date}</div>
-                </div>
-                <span className="tag">{source.origin.split(' · ')[1] || '來源'}</span>
-              </div>
-            ))}
-          </div>
-        </article>
       </section>
     </div>
   )
@@ -197,38 +232,47 @@ function EditStage() {
   const { state, patch, rewrite, saveDraft, submitReview, goStage, moveLayout, remember, applyLocal, togglePlatform } = useStudio()
   const [localOpen, setLocalOpen] = useState(false)
   const [localPrompt, setLocalPrompt] = useState('把標題改成更有提問感，並把主色稍微調亮。')
+  const [copyTab, setCopyTab] = useState('Threads')
+  const [layoutOpen, setLayoutOpen] = useState(false)
   const length = [...state.content].length
   const busy = Boolean(state.busy)
 
   return (
     <>
-      <div className="grid-2">
-        <section className="stack">
-          <article className="card">
+      <div className="grid-edit">
+        <section className="stack edit-tools">
+          <article className="surface">
             <h3>文案</h3>
-            <p className="sub">AI 已分別寫好 Threads 與 Instagram 版本。送交之後就不能再改，要等退回。</p>
+            <p className="sub">先改字；圖卡在右側。送審後需退回才能再改。</p>
             <label className="field">
               圖卡標題
-              <textarea value={state.title} onChange={(event) => patch({ title: event.target.value })} style={{ minHeight: 64 }} />
+              <textarea value={state.title} onChange={(event) => patch({ title: event.target.value })} style={{ minHeight: 56 }} />
             </label>
             <label className="field" style={{ marginTop: 10 }}>
               圖卡副標
               <input value={state.subtitle} onChange={(event) => patch({ subtitle: event.target.value })} />
             </label>
-            <label className="field" style={{ marginTop: 10 }}>
-              Threads 文案 <span className={length > THREADS_LIMIT ? 'count bad' : 'count'}>{length} / {THREADS_LIMIT}</span>
-              <textarea value={state.content} onChange={(event) => patch({ content: event.target.value })} style={{ minHeight: 140 }} />
-            </label>
-            <label className="field" style={{ marginTop: 10 }}>
-              Instagram 文案
-              <textarea value={state.igCaption} onChange={(event) => patch({ igCaption: event.target.value })} style={{ minHeight: 120 }} />
-            </label>
+            <div className="tabs" style={{ marginTop: 14 }}>
+              {['Threads', 'Instagram'].map((name) => (
+                <button key={name} type="button" className={copyTab === name ? 'on' : ''} onClick={() => setCopyTab(name)}>{name}</button>
+              ))}
+            </div>
+            {copyTab === 'Threads' ? (
+              <label className="field">
+                Threads 文案 <span className={length > THREADS_LIMIT ? 'count bad' : 'count'}>{length} / {THREADS_LIMIT}</span>
+                <textarea value={state.content} onChange={(event) => patch({ content: event.target.value })} style={{ minHeight: 160 }} />
+              </label>
+            ) : (
+              <label className="field">
+                Instagram 文案
+                <textarea value={state.igCaption} onChange={(event) => patch({ igCaption: event.target.value })} style={{ minHeight: 160 }} />
+              </label>
+            )}
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('short')}>改短一點</button>
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('friendly')}>語氣再輕一點</button>
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('new')}>換一個版本</button>
             </div>
-            <p className="meta" style={{ marginTop: 6 }}>這三個按鈕會請 AI 重新生成文案和圖卡（未存的修改會先存起來）。</p>
             <div className="row" style={{ marginTop: 12 }}>
               <span className="meta">這版感覺如何</span>
               {['喜歡', '普通', '不喜歡'].map((rating) => (
@@ -236,51 +280,62 @@ function EditStage() {
               ))}
             </div>
           </article>
-          <article className="card">
-            <h3>版面</h3>
-            <p className="sub">換色、調字，或把文字拖到圖片的空白處。發布時會照這個畫面匯出成圖片。</p>
-            <div className="row" style={{ marginBottom: 12 }}>
-              <button className="btn" type="button" onClick={() => moveLayout(layoutPreset('top'))}>文字在下</button>
-              <button className="btn" type="button" onClick={() => moveLayout(layoutPreset('bottom'))}>文字在上</button>
-            </div>
-            <div className="row">
-              <div className="swatches">
-                {STYLES.map((item, index) => (
-                  <button
-                    key={item[2]}
-                    type="button"
-                    className={index === state.style ? 'swatch on' : 'swatch'}
-                    style={{ background: `linear-gradient(135deg, ${item[0]}, ${item[1]})` }}
-                    title={item[2]}
-                    onClick={() => patch({ style: index, themeName: item[2] })}
-                  />
-                ))}
-              </div>
-              {state.templates.length ? (
-                <div className="swatches" aria-label="圖片模板">
-                  <button type="button" className={state.templateId ? 'template-chip none' : 'template-chip none on'} title="不用模板" onClick={() => patch({ templateId: null })}>無</button>
-                  {state.templates.map((tpl) => (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      className={tpl.id === state.templateId ? 'template-chip on' : 'template-chip'}
-                      style={{ backgroundImage: `url("${tpl.url}")` }}
-                      title={tpl.name}
-                      onClick={() => patch({ templateId: tpl.id })}
-                    />
-                  ))}
+
+          <article className="surface">
+            <button type="button" className="panel-toggle" onClick={() => setLayoutOpen((value) => !value)}>
+              <span>
+                <b>版面與模板</b>
+                <span className="meta">配色、字級、模板</span>
+              </span>
+              <span aria-hidden="true">{layoutOpen ? '▾' : '▸'}</span>
+            </button>
+            {layoutOpen ? (
+              <div className="panel-body">
+                <div className="row" style={{ marginBottom: 12 }}>
+                  <button className="btn" type="button" onClick={() => moveLayout(layoutPreset('top'))}>文字在下</button>
+                  <button className="btn" type="button" onClick={() => moveLayout(layoutPreset('bottom'))}>文字在上</button>
                 </div>
-              ) : null}
-              <label className="row" style={{ color: '#667085', fontSize: 12.5 }}>
-                標題字級
-                <input type="range" min="24" max="44" value={state.font} onChange={(event) => patch({ font: Number(event.target.value) })} />
-              </label>
-              <button className="btn soft" type="button" onClick={() => setLocalOpen(true)}>局部調整</button>
-            </div>
+                <div className="row">
+                  <div className="swatches">
+                    {STYLES.map((item, index) => (
+                      <button
+                        key={item[2]}
+                        type="button"
+                        className={index === state.style ? 'swatch on' : 'swatch'}
+                        style={{ background: `linear-gradient(135deg, ${item[0]}, ${item[1]})` }}
+                        title={item[2]}
+                        onClick={() => patch({ style: index, themeName: item[2] })}
+                      />
+                    ))}
+                  </div>
+                  {state.templates.length ? (
+                    <div className="swatches" aria-label="圖片模板">
+                      <button type="button" className={state.templateId ? 'template-chip none' : 'template-chip none on'} title="不用模板" onClick={() => patch({ templateId: null })}>無</button>
+                      {state.templates.map((tpl) => (
+                        <button
+                          key={tpl.id}
+                          type="button"
+                          className={tpl.id === state.templateId ? 'template-chip on' : 'template-chip'}
+                          style={{ backgroundImage: `url("${tpl.url}")` }}
+                          title={tpl.name}
+                          onClick={() => patch({ templateId: tpl.id })}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                  <label className="row" style={{ color: '#667085', fontSize: 12.5 }}>
+                    標題字級
+                    <input type="range" min="24" max="44" value={state.font} onChange={(event) => patch({ font: Number(event.target.value) })} />
+                  </label>
+                  <button className="btn soft" type="button" onClick={() => setLocalOpen(true)}>局部調整</button>
+                </div>
+              </div>
+            ) : null}
           </article>
-          <article className="card">
+
+          <article className="surface">
             <h3>發布到哪裡</h3>
-            <p className="sub">送審時一起決定。Threads、Instagram 會真的發布；X、Telegram 只是示範。</p>
+            <p className="sub">Threads、Instagram 正式發布；其餘為示範。</p>
             <div className="checks">
               {PLATFORMS.map((name) => (
                 <label className="check" key={name}>
@@ -290,14 +345,17 @@ function EditStage() {
               ))}
             </div>
           </article>
+
           <Busy />
-          <div className="row">
-            <button className="btn" type="button" onClick={() => goStage('write')}>回到撰寫</button>
+          <div className="action-bar">
+            <button className="btn" type="button" onClick={() => goStage('write')}>上一步</button>
             <button className="btn" type="button" disabled={busy} onClick={saveDraft}>存成草稿</button>
             <button className="btn primary" type="button" disabled={busy} onClick={submitReview}>送交審核</button>
           </div>
         </section>
-        <section className="stack">
+
+        <section className="stack edit-canvas">
+          <p className="meta canvas-hint">拖曳文字調整位置</p>
           <Canvas draggable />
           <Preview />
         </section>
@@ -320,19 +378,22 @@ function ReviewStage() {
   const { state, approve, returnToDraft } = useStudio()
   const scan = safetyScan(state)
   const [checked, setChecked] = useState({ read: false, rights: false })
+  const [tab, setTab] = useState('Threads')
   const item = activeDraft(state)
 
   return (
-    <div className="grid-2">
-      <section className="stack">
-        <article className="card">
+    <div className="grid-edit">
+      <section className="stack edit-tools">
+        <article className="surface">
           <h3>確認這則內容</h3>
-          <p className="sub">這是唯一的核准。通過之後才能發布；要改字請退回草稿。</p>
-          <div className="caption">{state.title}</div>
-          <p className="meta" style={{ marginTop: 10 }}>Threads 文案</p>
-          <div className="caption">{state.content}</div>
-          <p className="meta" style={{ marginTop: 10 }}>Instagram 文案</p>
-          <div className="caption">{state.igCaption}</div>
+          <p className="sub">核准一次即可。要改字請退回。</p>
+          <div className="caption tight"><b>{state.title}</b>{state.subtitle ? `\n${state.subtitle}` : ''}</div>
+          <div className="tabs" style={{ marginTop: 12 }}>
+            {['Threads', 'Instagram'].map((name) => (
+              <button key={name} type="button" className={tab === name ? 'on' : ''} onClick={() => setTab(name)}>{name}</button>
+            ))}
+          </div>
+          <div className="caption">{tab === 'Threads' ? state.content : state.igCaption}</div>
           <p className="meta" style={{ marginTop: 10 }}>發布到：{item?.destinations?.join('、') || '—'}</p>
           <div className={scan.detected.length ? 'notice bad' : 'notice'} style={{ marginTop: 12 }}>{scan.risks}</div>
           <label className="check" style={{ marginTop: 12 }}>
@@ -343,15 +404,15 @@ function ReviewStage() {
             <input type="checkbox" checked={checked.rights} onChange={(event) => setChecked((value) => ({ ...value, rights: event.target.checked }))} />
             圖片與文字都有使用權利
           </label>
-          <div className="row" style={{ marginTop: 14 }}>
+          <div className="action-bar">
             <button className="btn" type="button" onClick={() => returnToDraft(state.activeId)}>退回修改</button>
             <button className="btn primary" type="button" disabled={!(checked.read && checked.rights)} onClick={approve}>核准</button>
           </div>
         </article>
       </section>
-      <section className="stack">
+      <section className="stack edit-canvas">
         <Canvas />
-        <Preview />
+        <Preview platforms={['Threads', 'Instagram']} />
       </section>
     </div>
   )
@@ -384,37 +445,37 @@ function PublishStage() {
   const busy = Boolean(state.busy)
 
   return (
-    <div className="grid-2">
-      <section className="stack">
-        <article className="card">
+    <div className="grid-edit">
+      <section className="stack edit-tools">
+        <article className="surface">
           <h3>發布</h3>
-          {status === '已發布' ? <p className="sub">這則已經發布，只留紀錄，不能再改也不能刪。</p> : null}
-          {status === '已排程' ? <p className="sub">已排在 {item.when}。時間到後端會自動發布；取消後回到已核准。</p> : null}
-          {status === '已核准' ? <p className="sub">審核已通過。可以直接發，或排一個以後的時間。</p> : null}
+          {status === '已發布' ? <p className="sub">這則已經發布，只留紀錄。</p> : null}
+          {status === '已排程' ? <p className="sub">已排在 {item.when}。取消後會回到已核准。</p> : null}
+          {status === '已核准' ? <p className="sub">審核已通過。選一個主動作即可。</p> : null}
           {status === '發布中' ? <p className="sub">正在送到平台…</p> : null}
           {status === '部分發布' ? <p className="sub">有平台失敗。重試只會補發失敗的平台。</p> : null}
-          {status === '發布失敗' ? <p className="sub">全部失敗。可以重試，或回到草稿修改後重新送審。</p> : null}
-          <p className="meta">目的地：{item?.destinations?.join('、') || '—'}（送審時決定，要改請退回修改）</p>
+          {status === '發布失敗' ? <p className="sub">全部失敗。可以重試，或回到草稿修改。</p> : null}
+          <p className="meta">目的地：{item?.destinations?.join('、') || '—'}</p>
           {status === '已核准' ? (
             <>
               <label className="field" style={{ marginTop: 14 }}>
                 排程時間
                 <input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} />
               </label>
-              <div className="row" style={{ marginTop: 14 }}>
+              <div className="action-bar">
                 <button className="btn" type="button" onClick={() => returnToDraft(item.id)}>退回修改</button>
-                <button className="btn" type="button" disabled={busy} onClick={() => publish(item.id, when)}>排程發布</button>
-                <button className="btn primary" type="button" disabled={busy} onClick={() => publish(item.id, '現在')}>直接發布</button>
+                <button className="btn" type="button" disabled={busy} onClick={() => publish(item.id, when)}>排程</button>
+                <button className="btn primary" type="button" disabled={busy} onClick={() => publish(item.id, '現在')}>現在發布</button>
               </div>
             </>
           ) : null}
           {status === '已排程' ? (
-            <div className="row" style={{ marginTop: 14 }}>
+            <div className="action-bar">
               <button className="btn" type="button" onClick={() => cancelSchedule(item.id)}>取消排程</button>
             </div>
           ) : null}
           {status === '部分發布' || status === '發布失敗' ? (
-            <div className="row" style={{ marginTop: 14 }}>
+            <div className="action-bar">
               {status === '發布失敗' ? <button className="btn" type="button" onClick={() => reopen(item.id)}>回到草稿</button> : null}
               <button className="btn primary" type="button" disabled={busy} onClick={() => retry(item.id)}>重試發布</button>
             </div>
@@ -423,9 +484,9 @@ function PublishStage() {
           <Results item={item} />
         </article>
       </section>
-      <section className="stack">
+      <section className="stack edit-canvas">
         <Canvas />
-        <Preview />
+        <Preview platforms={['Threads', 'Instagram']} />
       </section>
     </div>
   )

@@ -67,10 +67,10 @@ export function TemplatesPage() {
 
       <div className="grid-4">
         {STYLES.map((item, index) => (
-          <article className="card" key={item[2]}>
-            <div style={{ height: 120, borderRadius: 14, background: `linear-gradient(145deg, ${item[0]}, ${item[1]})` }} />
+          <article className="surface" key={item[2]}>
+            <div style={{ height: 120, borderRadius: 10, background: `linear-gradient(145deg, ${item[0]}, ${item[1]})` }} />
             <h3 style={{ marginTop: 12 }}>{item[2]}</h3>
-            <p className="sub">適合 {tone} 的圖卡底。</p>
+            <p className="sub">套用為圖卡底色</p>
             <button className="btn soft" onClick={() => applyTemplate(index, tone)}>套用到工作台</button>
           </article>
         ))}

@@ -1,7 +1,21 @@
-import { MENU, reviewCount } from '../studio.js'
+import { useState } from 'react'
+import { MENU, MENU_MORE, MENU_PRIMARY, reviewCount } from '../studio.js'
+
+function NavButton({ id, label, active, badge, onClick }) {
+  return (
+    <button type="button" className={active ? 'active' : ''} onClick={onClick}>
+      {label}
+      {badge ? <small>{badge}</small> : null}
+    </button>
+  )
+}
 
 export function Shell({ state, user, onNavigate, onLogout, children }) {
   const count = reviewCount(state)
+  const inMore = MENU_MORE.includes(state.page)
+  const [moreOpen, setMoreOpen] = useState(inMore)
+  const byId = Object.fromEntries(MENU)
+
   return (
     <div className="app">
       <aside className="side">
@@ -13,12 +27,37 @@ export function Shell({ state, user, onNavigate, onLogout, children }) {
           </div>
         </div>
         <nav className="nav">
-          {MENU.map(([id, label]) => (
-            <button key={id} className={state.page === id ? 'active' : ''} onClick={() => onNavigate(id)}>
-              {label}
-              {id === 'review' && count > 0 ? <small>{count}</small> : null}
-            </button>
+          {MENU_PRIMARY.map((id) => (
+            <NavButton
+              key={id}
+              id={id}
+              label={byId[id]}
+              active={state.page === id}
+              badge={id === 'review' && count > 0 ? count : null}
+              onClick={() => onNavigate(id)}
+            />
           ))}
+          <button
+            type="button"
+            className={moreOpen || inMore ? 'nav-more on' : 'nav-more'}
+            onClick={() => setMoreOpen((open) => !open)}
+          >
+            更多
+            <span aria-hidden="true">{moreOpen || inMore ? '▾' : '▸'}</span>
+          </button>
+          {(moreOpen || inMore) ? (
+            <div className="nav-sub">
+              {MENU_MORE.map((id) => (
+                <NavButton
+                  key={id}
+                  id={id}
+                  label={byId[id]}
+                  active={state.page === id}
+                  onClick={() => onNavigate(id)}
+                />
+              ))}
+            </div>
+          ) : null}
         </nav>
         <div className="side-foot">
           <div className="who">

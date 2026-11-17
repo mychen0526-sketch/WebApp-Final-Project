@@ -1,12 +1,17 @@
 export const MENU = [
-  ['workspace', 'AI 創作工作台'],
-  ['discover', '趨勢情報中心'],
-  ['library', '內容資料庫'],
-  ['calendar', '發文排程日曆'],
-  ['review', '內容審核'],
-  ['templates', '品牌版型中心'],
-  ['settings', '偏好與安全設定'],
+  ['workspace', '寫貼文'],
+  ['library', '我的貼文'],
+  ['review', '待你確認'],
+  ['calendar', '排程'],
+  ['discover', '趨勢情報'],
+  ['templates', '品牌版型'],
+  ['settings', '偏好設定'],
 ]
+
+/** Daily path: keep these at the top of the sidebar. */
+export const MENU_PRIMARY = ['workspace', 'library', 'review', 'calendar']
+/** Secondary tools: collapsed under「更多」 so the main path stays clear. */
+export const MENU_MORE = ['discover', 'templates', 'settings']
 
 export const TONES = ['專業分析', '輕鬆分享', '討論互動']
 export const AUDIENCES = ['創業者與科技從業者', '一般大眾', '潛在企業客戶', '學術研究者']
@@ -19,10 +24,10 @@ export const PLATFORM_HINT = {
 }
 
 export const STYLES = [
-  ['#31406a', '#8d84d6', '科技深藍'],
-  ['#35524f', '#7eb8b0', '薄荷科技'],
-  ['#7a4d6c', '#e3b7c6', '未來粉紫'],
-  ['#4a4032', '#d4bc90', '精品暖金'],
+  ['#1f2a37', '#5d6b7c', '墨藍'],
+  ['#2c4a3e', '#7fa08f', '松綠'],
+  ['#4a3428', '#b08968', '焦糖'],
+  ['#3a2f2a', '#c4a484', '暖砂'],
 ]
 
 export const DEFAULT_LAYOUT = {
@@ -75,7 +80,7 @@ export function initialState() {
     sensitive: ['未公開產品', '內部代號', '機密客戶'],
     feedback: [],
     company: 'ORBIT / LAB',
-    themeName: '科技深藍',
+    themeName: '墨藍',
     templates: [],
     templateId: null,
     removedTemplates: {},

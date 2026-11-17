@@ -6,8 +6,8 @@ export function ReviewPage() {
 
   return (
     <article className="card">
-      <h3>等待確認</h3>
-      <p className="sub">這裡只列出已送交、還沒核准的內容。核准在打開之後做一次。</p>
+      <h3>待你確認</h3>
+      <p className="sub">已送審、尚未核准的貼文。打開後再核准一次。</p>
       <div className="list">
         {queue.length === 0 ? <p className="meta">目前沒有待審內容。</p> : null}
         {queue.map((item) => (

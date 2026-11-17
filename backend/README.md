@@ -26,7 +26,7 @@ copy .env.example .env          # 預設：記憶體資料庫、模擬 AI、模�
 
 ## 接上真的服務
 
-1. **Supabase**：建立專案，在 SQL Editor 執行 `supabase/migrations/0001_init.sql`（建 6 張表、RLS、`post-images` bucket）。把 Project URL 和 service role key 填進 `.env` 的 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`。專案若仍用舊版 HS256 JWT secret，再填 `SUPABASE_JWT_SECRET`；新專案走 JWKS，不必填。
+1. **Supabase**：建立專案，在 SQL Editor 依序執行 `supabase/migrations/0001_init.sql`（建 6 張表、RLS、`post-images` bucket）與 `0002_templates.sql`（圖片模板）。把 Project URL 和 service role key 填進 `.env` 的 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`。專案若仍用舊版 HS256 JWT secret，再填 `SUPABASE_JWT_SECRET`；新專案走 JWKS，不必填。
 2. **Gemini**：到 Google AI Studio 取得 API key，填 `GEMINI_API_KEY`。沒填就自動用模擬輸出。
 3. **Threads／Instagram**：在 Meta 開發者後台建立 App，填 `THREADS_APP_ID/SECRET`、`INSTAGRAM_APP_ID/SECRET`，並把 `.env` 裡的 redirect URI 加進 App 設定。然後設 `MOCK_PUBLISH=false`。注意：平台要從**公開網址**抓圖，所以真的發布一定要用 Supabase Storage，記憶體模式的圖片網址平台抓不到。
 
@@ -73,10 +73,13 @@ generation_failed ─重試→┘                        scheduled ─取消→ 
 | --- | --- | --- |
 | GET | `/health` | 目前用的是哪種資料庫、AI、發布模式 |
 | POST | `/api/candidates` | `{goal, tone?}` → 3 個提示詞候選，不存檔 |
-| POST | `/api/posts` | `{goal, tone?, audience?, candidates, selected, layout?, style?, visual_style?}` 建立並在背景生成，回 202 |
+| POST | `/api/posts` | `{goal, tone?, audience?, candidates, selected, layout?, style?, visual_style?, template_id?}` 建立並在背景生成，回 202 |
 | GET | `/api/posts?status=` | 貼文列表，依更新時間排序 |
 | GET | `/api/posts/{id}` | 單篇，含 `images` 與 `publications`（P6 輪詢用） |
 | POST | `/api/posts/{id}/images` | multipart：`file`（PNG/JPEG ≤ 8MB）、`source`=`uploaded`／`exported` |
+| GET | `/api/templates` | 使用者自己的圖片模板 |
+| POST | `/api/templates` | multipart：`file`（PNG/JPEG ≤ 8MB，建議 1080×1080）、`name` |
+| DELETE | `/api/templates/{id}` | 從清單移除；已使用它的貼文照常顯示與發布 |
 | POST | `/api/posts/{id}/feedback` | `{rating: like｜neutral｜dislike}` |
 | GET／PUT | `/api/settings` | 品牌名稱、預設語氣、受眾、敏感詞 |
 | POST | `/api/safety/scan` | `{title, text}` → `{ok, detected, claims}` |
@@ -98,7 +101,9 @@ generation_failed ─重試→┘                        scheduled ─取消→ 
 }
 ```
 
-發布用的圖：優先用最新的 `exported`（前端把畫布含文字匯出的 PNG），沒有才用上傳或生成的底圖。生成的底圖不含文字，所以正式發布前，前端應先匯出並上傳 `exported`。
+**圖片模板**：建立或重新生成時帶 `template_id`，就不呼叫 AI 產底圖，改用該模板當背景（`post_images.source = template`，`canvas_json` 會多 `template_id`）。重新生成不帶 `template_id` 沿用原模板，帶 `null` 改回 AI 底圖。別人的模板一律 404。
+
+發布用的圖：優先用最新的 `exported`（前端把畫布含文字匯出的 PNG），沒有才依序用上傳、模板、生成的底圖。生成的底圖不含文字，所以正式發布前，前端應先匯出並上傳 `exported`。
 
 ## 程式結構
 

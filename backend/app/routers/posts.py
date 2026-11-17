@@ -21,6 +21,7 @@ from ..services.storage import image_path
 from ..state import Status, allowed_from, require
 from ..timeutil import now_iso, parse_ts, utcnow
 from .settings import load_settings
+from .templates import get_owned_template
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
 
@@ -55,13 +56,32 @@ def _transition(services: Services, user_id: str, post: dict, action: str, chang
     return updated
 
 
-def _design_from(post: dict, body) -> dict:
+def _with_template(services: Services, user_id: str, choice: dict, template_id: str | None) -> dict:
+    """Attach the user's template (checked for ownership now, so a bad id is a 404 and not a
+    generation failure). Its URL travels with the choice because the template may be deleted later."""
+    if template_id:
+        template = get_owned_template(services, user_id, template_id)
+        choice.update(
+            template_id=template["id"],
+            template_url=template["public_url"],
+            template_path=template["storage_path"],
+        )
+    return choice
+
+
+def _design_from(services: Services, user_id: str, post: dict, body) -> dict:
     canvas = post.get("canvas_json") or {}
-    return design.resolve(
+    choice = design.resolve(
         body.layout or canvas.get("layout"),
         body.style if body.style is not None else canvas.get("style"),
         body.visual_style or canvas.get("visual_style"),
     )
+    if "template_id" in body.model_fields_set:  # explicit null drops the template
+        return _with_template(services, user_id, choice, body.template_id)
+    if canvas.get("template_id"):  # keep the previous template, even if it was removed from the picker
+        choice.update(template_id=canvas["template_id"], template_url=canvas["image"]["url"],
+                      template_path=canvas.get("template_path"))
+    return choice
 
 
 def _assert_safe(services: Services, user_id: str, post: dict) -> None:
@@ -97,7 +117,7 @@ def create_post(
     services: Services = Depends(get_services),
 ):
     """P3 → P4: create the post in `generating` and generate copy + card in the background."""
-    choice = design.resolve(body.layout, body.style, body.visual_style)
+    choice = _with_template(services, user_id, design.resolve(body.layout, body.style, body.visual_style), body.template_id)
     candidates = body.candidates or [body.selected]
     post = services.repo.create_post(
         {
@@ -146,7 +166,7 @@ def regenerate(
     changes: dict = {"status": Status.GENERATING.value, "generation_error": None}
     if body.selected:
         changes["selected_prompt"] = body.selected.model_dump()
-    choice = _design_from(post, body)
+    choice = _design_from(services, user_id, post, body)
     updated = _transition(services, user_id, post, "regenerate", changes)
     background.add_task(run_generation, services, user_id, post_id, choice, body.mode)
     return _detail(services, updated)

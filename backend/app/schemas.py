@@ -8,7 +8,7 @@ from .state import Status
 
 Platform = Literal["threads", "instagram"]
 PLATFORMS: tuple[str, ...] = ("threads", "instagram")
-ImageSource = Literal["generated", "uploaded", "exported"]
+ImageSource = Literal["generated", "uploaded", "exported", "template"]
 LayoutName = Literal["top", "bottom", "center", "left"]
 VisualStyle = Literal["abstract", "isometric", "geometric", "editorial"]
 
@@ -61,6 +61,9 @@ class DesignOptions(BaseModel):
     layout: LayoutName | None = None
     style: int | None = Field(default=None, ge=0, le=3)
     visual_style: VisualStyle | None = None
+    # A user's own background template (GET /api/templates). When set, the AI image step is
+    # skipped and the template is used as the card background. Send null to drop it on regenerate.
+    template_id: str | None = Field(default=None, max_length=64)
 
 
 class PostCreate(DesignOptions):

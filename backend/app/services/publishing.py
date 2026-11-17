@@ -14,8 +14,8 @@ log = logging.getLogger(__name__)
 
 
 def publish_image_url(images: list[dict]) -> str | None:
-    """Prefer the latest canvas export (has the text overlay); fall back to the latest other image."""
-    for source in ("exported", "uploaded", "generated"):
+    """Prefer the latest canvas export (has the text overlay); fall back to upload, template, then AI image."""
+    for source in ("exported", "uploaded", "template", "generated"):
         matches = [i for i in images if i["source"] == source]
         if matches:
             return max(matches, key=lambda i: i["created_at"])["public_url"]

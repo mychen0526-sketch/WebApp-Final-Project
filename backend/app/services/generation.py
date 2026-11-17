@@ -1,7 +1,8 @@
 """Copy + card generation for one post (runs as a background task).
 
 Order (Notion §8): layout is fixed first → B captions, D card texts → C text-free image whose
-empty area matches the layout. Success moves the post generating → editing; any failure moves it
+empty area matches the layout. If the user picked one of their own templates, step C is skipped
+and the template becomes the card background. Success moves the post generating → editing; any failure moves it
 to generation_failed with the reason (E1), never leaving it stuck in generating.
 """
 import logging
@@ -23,6 +24,8 @@ def build_canvas(design_choice: dict, image_url: str, texts: list[dict]) -> dict
         "visual_style": design_choice["visual_style"],
         "colorScheme": design.COLOR_SCHEMES[design_choice["style"]].name,
         "background": design.COLOR_SCHEMES[design_choice["style"]].primary,
+        "template_id": design_choice.get("template_id"),
+        "template_path": design_choice.get("template_path"),
         "image": {"url": image_url, "x": 0, "y": 0, "width": design.CANVAS_SIZE, "height": design.CANVAS_SIZE},
         "texts": texts,
     }
@@ -41,11 +44,15 @@ def run_generation(services, user_id: str, post_id: str, design_choice: dict, mo
 
         captions = ai.captions(post["goal"], post.get("tone"), post.get("audience"), candidate, mode)
         texts = [t.model_dump() for t in ai.card_texts(candidate, layout, scheme)]
-        png = ai.image(candidate, design_choice["visual_style"], layout, scheme)
-
-        path = image_path(user_id, post_id, "png")
-        url = services.storage.upload(path, png, "image/png")
-        repo.add_image(post_id, "generated", path, url)
+        if design_choice.get("template_id"):
+            # the user's own background: no AI image, reuse the stored template file
+            url = design_choice["template_url"]
+            repo.add_image(post_id, "template", design_choice.get("template_path") or "", url)
+        else:
+            png = ai.image(candidate, design_choice["visual_style"], layout, scheme)
+            path = image_path(user_id, post_id, "png")
+            url = services.storage.upload(path, png, "image/png")
+            repo.add_image(post_id, "generated", path, url)
 
         headline = next((t["text"] for t in texts if t["textType"] == "headline"), candidate.title)
         repo.update_post(

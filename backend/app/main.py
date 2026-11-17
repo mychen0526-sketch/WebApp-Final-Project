@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import Settings, get_settings
 from .container import Services, build_services
 from .errors import NotFound, install_handlers
-from .routers import accounts, candidates, posts, settings
+from .routers import accounts, candidates, posts, settings, templates
 from .services.scheduler import scheduler_loop
 from .services.storage import MemoryStorage
 
@@ -45,7 +45,7 @@ def create_app(services: Services | None = None, app_settings: Settings | None =
         allow_headers=["*"],
     )
     install_handlers(app)
-    for module in (accounts, candidates, posts, settings):
+    for module in (accounts, candidates, posts, settings, templates):
         app.include_router(module.router)
 
     @app.get("/health", tags=["meta"])

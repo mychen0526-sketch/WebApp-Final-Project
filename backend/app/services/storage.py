@@ -11,6 +11,10 @@ def image_path(user_id: str, post_id: str, ext: str = "png") -> str:
     return f"{user_id}/{post_id}/{uuid.uuid4().hex}.{ext}"
 
 
+def template_path(user_id: str, ext: str = "png") -> str:
+    return f"{user_id}/templates/{uuid.uuid4().hex}.{ext}"
+
+
 class Storage(Protocol):
     def upload(self, path: str, data: bytes, content_type: str) -> str:
         """Store bytes and return the public URL."""

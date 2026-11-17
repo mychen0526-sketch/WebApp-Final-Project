@@ -75,6 +75,21 @@ class SupabaseRepo:
     def list_images(self, post_id):
         return self.db.table("post_images").select("*").eq("post_id", post_id).order("created_at").execute().data
 
+    # ---------- templates ----------
+    def add_template(self, user_id, data):
+        return self.db.table("templates").insert({"user_id": user_id, **data}).execute().data[0]
+
+    def list_templates(self, user_id):
+        return self.db.table("templates").select("*").eq("user_id", user_id).order("created_at", desc=True).execute().data
+
+    def get_template(self, user_id, template_id):
+        rows = self.db.table("templates").select("*").eq("id", template_id).eq("user_id", user_id).limit(1).execute().data
+        return rows[0] if rows else None
+
+    def delete_template(self, user_id, template_id):
+        rows = self.db.table("templates").delete().eq("id", template_id).eq("user_id", user_id).execute().data
+        return bool(rows)
+
     # ---------- publications ----------
     def list_publications(self, post_id):
         return self.db.table("publications").select("*").eq("post_id", post_id).execute().data

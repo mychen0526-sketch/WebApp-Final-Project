@@ -33,6 +33,7 @@ class MemoryRepo:
         self.accounts: dict[tuple[str, str], dict] = {}
         self.settings: dict[str, dict] = {}
         self.feedback: list[dict] = []
+        self.templates: dict[str, dict] = {}
 
     # ---------- posts ----------
     def create_post(self, data: dict) -> dict:
@@ -118,6 +119,31 @@ class MemoryRepo:
     def list_images(self, post_id):
         with self._lock:
             return [dict(i) for i in self.images if i["post_id"] == post_id]
+
+    # ---------- templates ----------
+    def add_template(self, user_id, data):
+        with self._lock:
+            row = {"id": str(uuid.uuid4()), "user_id": user_id, "created_at": now_iso(), **copy.deepcopy(data)}
+            self.templates[row["id"]] = row
+            return dict(row)
+
+    def list_templates(self, user_id):
+        with self._lock:
+            rows = [dict(t) for t in self.templates.values() if t["user_id"] == user_id]
+        return sorted(rows, key=lambda t: t["created_at"], reverse=True)
+
+    def get_template(self, user_id, template_id):
+        with self._lock:
+            row = self.templates.get(template_id)
+            return dict(row) if row and row["user_id"] == user_id else None
+
+    def delete_template(self, user_id, template_id):
+        with self._lock:
+            row = self.templates.get(template_id)
+            if not row or row["user_id"] != user_id:
+                return False
+            del self.templates[template_id]
+            return True
 
     # ---------- publications ----------
     def list_publications(self, post_id):

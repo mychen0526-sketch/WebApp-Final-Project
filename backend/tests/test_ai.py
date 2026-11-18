@@ -35,3 +35,53 @@ def test_enforce_layout_overrides_model_values():
 def test_gradient_png_is_valid_png():
     data = ai.gradient_png("#31406a", "#8d84d6", size=8)
     assert data.startswith(b"\x89PNG\r\n\x1a\n") and data.endswith(b"IEND\xaeB`\x82")
+
+
+def test_adjust_prompt_fills_every_placeholder():
+    from app.schemas import AdjustIn
+
+    body = AdjustIn(
+        instruction="改短",
+        current={"title": "標", "threads": "文", "palettes": ["墨藍", "松綠"]},
+        history=[{"role": "user", "text": "先前"}, {"role": "assistant", "text": "好"}],
+    )
+    prompt = ai.prompt_adjust(body)
+    for leftover in ("{title}", "{threads}", "{instagram}", "{history}", "{instruction}", "{palettes}", "{font}"):
+        assert leftover not in prompt
+    assert "0 號 墨藍" in prompt and "使用者：先前" in prompt
+
+
+class _FakeStream:
+    status_code = 200
+
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_lines(self):
+        yield from self.lines
+
+
+def test_rap_stream_reads_openai_style_chunks(monkeypatch):
+    reply = json.dumps({"threads": "第一行\n第二行", "instagram": "IG #AI"}, ensure_ascii=False)
+    chunks = [reply[i : i + 5] for i in range(0, len(reply), 5)]
+    lines = [f"data: {json.dumps({'choices': [{'delta': {'content': c}}]})}" for c in chunks]
+    lines = [": keep-alive", *lines, "data: [DONE]"]
+    sent = {}
+
+    def fake_stream(method, url, json, headers, timeout):
+        sent.update(json)
+        return _FakeStream(lines)
+
+    monkeypatch.setattr(ai.httpx, "stream", fake_stream)
+    seen = []
+    rap = ai.RapAI("key", "https://rap.example/v1", "model")
+    captions = rap.captions("目標", None, None, Candidate(title="t", angle="a", hook="h"), on_text=seen.append)
+    assert sent["stream"] is True
+    assert captions.threads == "第一行\n第二行"
+    assert len(seen) == len(chunks) and seen[-1] == reply

@@ -22,7 +22,9 @@ function messageOf(data, status) {
   return `後端回應錯誤（${status}）`
 }
 
-export async function request(path, { method = 'GET', body, form, auth = true } = {}) {
+export const isAbort = (error) => error?.name === 'AbortError'
+
+export async function request(path, { method = 'GET', body, form, auth = true, signal } = {}) {
   const headers = auth ? await authHeaders() : {}
   let payload
   if (form) {
@@ -33,10 +35,11 @@ export async function request(path, { method = 'GET', body, form, auth = true } 
   }
   let response
   try {
-    const init = { method, headers }
+    const init = { method, headers, signal }
     if (payload !== undefined) init.body = payload
     response = await fetch(`${API_BASE}${path}`, init)
-  } catch {
+  } catch (error) {
+    if (isAbort(error)) throw error
     throw new ApiError(`連不到後端 ${API_BASE}，請確認 uvicorn 有在跑`, { status: 0, code: 'network' })
   }
   if (response.status === 204) return null
@@ -51,15 +54,61 @@ export async function request(path, { method = 'GET', body, form, auth = true } 
   return data
 }
 
-const json = (method) => (path, body) => request(path, { method, body: body ?? {} })
+const json = (method) => (path, body, options) => request(path, { method, body: body ?? {}, ...options })
+
+/**
+ * Follow a generating post over server-sent events.
+ * Calls onProgress({stage, threads}) as the copy is written; resolves with the post once it has
+ * left `generating`. Throws if the stream cannot be opened (the caller then falls back to polling).
+ */
+async function followPost(id, { onProgress, signal } = {}) {
+  const headers = await authHeaders()
+  const response = await fetch(`${API_BASE}/api/posts/${id}/stream`, { headers, signal })
+  if (response.status === 401) {
+    signOut()
+    throw new AuthError('登入已過期，請重新登入')
+  }
+  if (!response.ok || !response.body) throw new ApiError(`串流無法開啟（${response.status}）`, { status: response.status, code: 'stream' })
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += value.replaceAll('\r\n', '\n')
+    let cut
+    while ((cut = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, cut)
+      buffer = buffer.slice(cut + 2)
+      let event = 'message'
+      let data = ''
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data += line.slice(5).trim()
+      }
+      if (!data) continue
+      const payload = JSON.parse(data)
+      if (event === 'progress') onProgress?.(payload)
+      if (event === 'done') {
+        reader.cancel().catch(() => {})
+        if (!payload.post) throw new ApiError('找不到這篇貼文', { status: 404 })
+        return payload.post
+      }
+      if (event === 'timeout') throw new ApiError('等太久了，請到內容資料庫重新整理看看', { code: 'stream' })
+    }
+  }
+  throw new ApiError('串流提早結束', { code: 'stream' })
+}
 
 export const api = {
   health: () => request('/health', { auth: false }),
-  candidates: (goal, tone) => json('POST')('/api/candidates', { goal, tone }),
+  candidates: (goal, tone, signal) => json('POST')('/api/candidates', { goal, tone }, { signal }),
   listPosts: () => request('/api/posts'),
   getPost: (id) => request(`/api/posts/${id}`),
   createPost: (body) => json('POST')('/api/posts', body),
   regenerate: (id, body) => json('POST')(`/api/posts/${id}/generate`, body),
+  followPost,
+  cancel: (id) => json('POST')(`/api/posts/${id}/cancel`),
+  adjust: (id, body, signal) => json('POST')(`/api/posts/${id}/adjust`, body, { signal }),
   savePost: (id, body) => json('PATCH')(`/api/posts/${id}`, body),
   deletePost: (id) => request(`/api/posts/${id}`, { method: 'DELETE' }),
   uploadImage(id, blob, source = 'exported') {

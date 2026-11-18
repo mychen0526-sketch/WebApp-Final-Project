@@ -1,6 +1,6 @@
 import { useState } from 'react'
+import { AdjustChat } from '../components/AdjustChat.jsx'
 import { DragCanvas } from '../components/DragCanvas.jsx'
-import { Modal } from '../components/ui.jsx'
 import { useStudio } from '../context.js'
 import { defaultScheduleInput, isRealPlatform, PLATFORM_NAME } from '../lib/posts.js'
 import {
@@ -28,14 +28,74 @@ const BUSY_TEXT = {
   publishing: '發布中…',
 }
 
-function Busy() {
-  const { state } = useStudio()
-  if (!state.busy) return null
+const GEN_STEPS = [
+  ['copy', '寫文案'],
+  ['card', '圖卡文字'],
+  ['image', '產生底圖'],
+  ['save', '完成'],
+]
+const STOPPABLE = new Set(['candidates', 'generating'])
+const MODE_LABEL = { short: '改短', friendly: '語氣放輕', new: '換版本' }
+
+// Generation in progress: which step, the Threads copy as it is written, and 「停止」.
+function GenerationProgress() {
+  const { state, stop } = useStudio()
+  const progress = state.progress
+  const at = GEN_STEPS.findIndex(([id]) => id === progress?.stage)
   return (
-    <p className="notice busy" style={{ marginTop: 12 }}>
+    <div className="gen-progress" aria-live="polite">
+      <ol className="gen-steps">
+        {GEN_STEPS.map(([id, label], index) => (
+          <li key={id} className={index < at ? 'done' : index === at ? 'on' : ''}>{label}</li>
+        ))}
+      </ol>
+      <div className="caption stream-text">
+        {progress?.threads || <span className="meta">AI 正在構思…</span>}
+        {!progress || progress.stage === 'copy' ? <span className="caret" aria-hidden="true" /> : null}
+      </div>
+      <div className="row">
+        <span className="spinner" />
+        <span className="meta grow">{progress?.stage === 'image' ? '底圖約需 10–40 秒' : '文案寫好後會產生圖卡'}</span>
+        <button className="btn" type="button" onClick={stop}>停止</button>
+      </div>
+    </div>
+  )
+}
+
+function Busy({ full = false }) {
+  const { state, stop } = useStudio()
+  if (!state.busy) return null
+  if (full && state.busy === 'generating') return <GenerationProgress />
+  return (
+    <div className="notice busy" style={{ marginTop: 12 }} aria-live="polite">
       <span className="spinner" />
-      {BUSY_TEXT[state.busy] || '處理中…'}
-    </p>
+      <span className="grow">{BUSY_TEXT[state.busy] || '處理中…'}</span>
+      {STOPPABLE.has(state.busy) ? <button className="link" type="button" onClick={stop}>停止</button> : null}
+    </div>
+  )
+}
+
+// 「‹ 2 / 3 ›」: switch between the AI versions of this post.
+function VersionNav() {
+  const { state, showVersion } = useStudio()
+  const versions = activeDraft(state)?.post?.versions || []
+  if (versions.length < 2) return null
+  const found = versions.findIndex((item) => item.id === state.versionId)
+  const index = found < 0 ? versions.length - 1 : found
+  const version = versions[index]
+  const edited = version.caption_threads !== state.content || version.caption_instagram !== state.igCaption
+  const busy = Boolean(state.busy)
+  const go = (next) => {
+    if (edited && !window.confirm('目前的修改會被這個版本取代，確定切換？')) return
+    showVersion(next)
+  }
+  return (
+    <div className="version-nav" aria-label="AI 版本">
+      <button type="button" disabled={busy || index === 0} onClick={() => go(index - 1)} aria-label="上一版">‹</button>
+      <span>{index + 1} / {versions.length}</span>
+      <button type="button" disabled={busy || index === versions.length - 1} onClick={() => go(index + 1)} aria-label="下一版">›</button>
+      <span className="meta">{MODE_LABEL[version.mode] || '初稿'}{edited ? ' · 已修改' : ''}</span>
+    </div>
   )
 }
 
@@ -158,7 +218,7 @@ function WriteStage() {
             {[...new Set([state.audience, ...AUDIENCES])].map((item) => <option key={item}>{item}</option>)}
           </select>
         </div>
-        <Busy />
+        {state.busy !== 'generating' ? <Busy /> : null}
         {active?.status === '生成失敗' ? <p className="notice bad" style={{ marginTop: 12 }}>生成失敗：{active.error}</p> : null}
         <div className="action-bar">
           <button className="btn" type="button" onClick={startFresh}>清空重來</button>
@@ -216,11 +276,11 @@ function WriteStage() {
           </>
         ) : (
           <article className="preview-empty">
-            <h3>{active?.status === '生成中' ? '生成中…' : '圖卡預覽'}</h3>
+            <h3>{active?.status === '生成中' ? '生成中' : '圖卡預覽'}</h3>
             <p className="sub">
               {active?.status === '生成中' ? '完成後會進編輯。' : '選好方向後會出現在這裡。'}
             </p>
-            <Busy />
+            <Busy full />
           </article>
         )}
       </section>
@@ -229,9 +289,7 @@ function WriteStage() {
 }
 
 function EditStage() {
-  const { state, patch, rewrite, saveDraft, submitReview, goStage, moveLayout, remember, applyLocal, togglePlatform } = useStudio()
-  const [localOpen, setLocalOpen] = useState(false)
-  const [localPrompt, setLocalPrompt] = useState('把標題改成更有提問感，並把主色稍微調亮。')
+  const { state, patch, rewrite, saveDraft, submitReview, goStage, moveLayout, remember, togglePlatform } = useStudio()
   const [copyTab, setCopyTab] = useState('Threads')
   const [layoutOpen, setLayoutOpen] = useState(false)
   const length = [...state.content].length
@@ -272,6 +330,7 @@ function EditStage() {
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('short')}>改短一點</button>
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('friendly')}>語氣再輕一點</button>
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('new')}>換一個版本</button>
+              <VersionNav />
             </div>
             <div className="row" style={{ marginTop: 12 }}>
               <span className="meta">這版感覺如何</span>
@@ -327,7 +386,6 @@ function EditStage() {
                     標題字級
                     <input type="range" min="24" max="44" value={state.font} onChange={(event) => patch({ font: Number(event.target.value) })} />
                   </label>
-                  <button className="btn soft" type="button" onClick={() => setLocalOpen(true)}>局部調整</button>
                 </div>
               </div>
             ) : null}
@@ -346,7 +404,7 @@ function EditStage() {
             </div>
           </article>
 
-          <Busy />
+          <Busy full />
           <div className="action-bar">
             <button className="btn" type="button" onClick={() => goStage('write')}>上一步</button>
             <button className="btn" type="button" disabled={busy} onClick={saveDraft}>存成草稿</button>
@@ -357,19 +415,10 @@ function EditStage() {
         <section className="stack edit-canvas">
           <p className="meta canvas-hint">拖曳文字調整位置</p>
           <Canvas draggable />
+          <AdjustChat key={state.activeId} />
           <Preview />
         </section>
       </div>
-      {localOpen ? (
-        <Modal
-          title="局部調整"
-          desc="描述想改的地方。目前認得標題（改成問句）、顏色和字級。"
-          onClose={() => setLocalOpen(false)}
-          actions={<button className="btn primary" type="button" onClick={() => { applyLocal(localPrompt); setLocalOpen(false) }}>套用</button>}
-        >
-          <textarea value={localPrompt} onChange={(event) => setLocalPrompt(event.target.value)} />
-        </Modal>
-      ) : null}
     </>
   )
 }

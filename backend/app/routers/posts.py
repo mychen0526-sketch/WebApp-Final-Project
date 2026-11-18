@@ -1,11 +1,18 @@
 """Posts: CRUD + every status transition. Status changes only happen here (or in background jobs)."""
+import asyncio
+import json
+import time
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, Response, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 
 from ..auth import get_current_user, get_services
 from ..container import Services
 from ..errors import Conflict, NotFound, Unprocessable
 from ..schemas import (
     STATUS_VALUES,
+    AdjustIn,
     ApproveIn,
     FeedbackIn,
     PostCreate,
@@ -15,11 +22,13 @@ from ..schemas import (
     SubmitIn,
 )
 from ..services import design, safety
+from ..services.ai import AIError
 from ..services.generation import run_generation
 from ..services.publishing import publish_post
 from ..services.storage import image_path
 from ..state import Status, allowed_from, require
 from ..timeutil import now_iso, parse_ts, utcnow
+from .candidates import GenerationFailed
 from .settings import load_settings
 from .templates import get_owned_template
 
@@ -29,6 +38,7 @@ THREADS_MAX_CHARS = 500
 INSTAGRAM_MAX_CHARS = 2200
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg"}
+STREAM_LIMIT_SECONDS = 10 * 60
 
 
 # ---------------------------------------------------------------- helpers
@@ -131,7 +141,8 @@ def create_post(
             "status": Status.GENERATING.value,
         }
     )
-    background.add_task(run_generation, services, user_id, post["id"], choice)
+    token = services.progress.start(post["id"])
+    background.add_task(run_generation, services, user_id, post["id"], choice, None, token)
     return _detail(services, post)
 
 
@@ -168,8 +179,87 @@ def regenerate(
         changes["selected_prompt"] = body.selected.model_dump()
     choice = _design_from(services, user_id, post, body)
     updated = _transition(services, user_id, post, "regenerate", changes)
-    background.add_task(run_generation, services, user_id, post_id, choice, body.mode)
+    token = services.progress.start(post_id)
+    background.add_task(run_generation, services, user_id, post_id, choice, body.mode, token)
     return _detail(services, updated)
+
+
+@router.post("/{post_id}/cancel")
+def cancel(post_id: str, user_id: str = Depends(get_current_user), services: Services = Depends(get_services)):
+    """「停止」: leave `generating` right away. With an earlier version (a rewrite) the post goes back
+    to editing unchanged; a first generation has nothing to go back to, so it ends as generation_failed.
+    The background task notices at its next step and stops without writing."""
+    post = _get(services, user_id, post_id)
+    require(post, "cancel")
+    if post.get("caption_threads"):
+        changes = {"status": Status.EDITING.value, "generation_error": None}
+    else:
+        changes = {"status": Status.GENERATION_FAILED.value, "generation_error": "已停止生成"}
+    updated = _transition(services, user_id, post, "cancel", changes)
+    services.progress.cancel(post_id)
+    return _detail(services, updated)
+
+
+def _sse(event: str, data) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+@router.get("/{post_id}/stream")
+async def stream(post_id: str, user_id: str = Depends(get_current_user), services: Services = Depends(get_services)):
+    """Server-sent events while a post generates.
+
+    `progress` {stage, threads}: stage is copy → card → image → save; threads is the Threads caption so far.
+    `done` {post}: the post once it has left `generating` (editing, generation_failed, …). Then the stream ends.
+    """
+    await run_in_threadpool(_get, services, user_id, post_id)
+    hub = services.progress
+
+    async def events():
+        last = -1
+        started = time.monotonic()
+        tick = 0
+        while time.monotonic() - started < STREAM_LIMIT_SECONDS:
+            item = hub.get(post_id)
+            if item and item.version != last and not (item.done or item.cancelled):
+                last = item.version
+                yield _sse("progress", {"stage": item.stage, "threads": item.threads})
+            settled = item is not None and (item.done or item.cancelled)
+            # no live entry (another worker / restart): fall back to checking the database every ~2 s
+            if settled or tick % 13 == 0:
+                post = await run_in_threadpool(services.repo.get_post, user_id, post_id)
+                if not post or post["status"] != Status.GENERATING:
+                    detail = await run_in_threadpool(_detail, services, post) if post else None
+                    yield _sse("done", {"post": detail})
+                    return
+            if tick % 100 == 99:
+                yield ": ping\n\n"  # keep proxies from closing an idle connection
+            tick += 1
+            await asyncio.sleep(0.15)
+        yield _sse("timeout", {})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/{post_id}/adjust")
+def adjust(
+    post_id: str,
+    body: AdjustIn,
+    user_id: str = Depends(get_current_user),
+    services: Services = Depends(get_services),
+):
+    """AI 微調: one chat turn. Returns {reply, ...changed fields}; nothing is saved until the editor saves."""
+    post = _get(services, user_id, post_id)
+    if post["status"] != Status.EDITING:
+        raise Conflict("只有草稿可以微調，請先退回修改", detail={"status": post["status"], "action": "adjust"})
+    try:
+        result = services.ai.adjust(body)
+    except AIError as exc:
+        raise GenerationFailed(str(exc)) from exc
+    return result.model_dump(exclude_none=True)
 
 
 @router.patch("/{post_id}")

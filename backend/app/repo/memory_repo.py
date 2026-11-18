@@ -16,6 +16,7 @@ POST_DEFAULTS = {
     "caption_threads": None,
     "caption_instagram": None,
     "canvas_json": None,
+    "versions": [],
     "status": "generating",
     "platforms": [],
     "generation_error": None,

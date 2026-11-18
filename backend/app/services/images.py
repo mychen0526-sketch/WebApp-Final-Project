@@ -78,8 +78,11 @@ class FluxImageAI:
     def candidates(self, goal, tone):
         return self.text.candidates(goal, tone)
 
-    def captions(self, goal, tone, audience, candidate, mode=None):
-        return self.text.captions(goal, tone, audience, candidate, mode)
+    def captions(self, goal, tone, audience, candidate, mode=None, on_text=None):
+        return self.text.captions(goal, tone, audience, candidate, mode, on_text)
+
+    def adjust(self, body):
+        return self.text.adjust(body)
 
     def card_texts(self, candidate, layout, scheme):
         return self.text.card_texts(candidate, layout, scheme)

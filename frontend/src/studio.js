@@ -68,6 +68,8 @@ export function initialState() {
     activeId: null,
     candidates: [],
     busy: null,
+    progress: null, // {stage, threads} while AI writes, from the generation stream
+    versionId: null, // which AI version the editor was loaded from (posts.versions[].id)
     platform: 'Threads',
     platforms: ['Threads'],
     drafts: [],

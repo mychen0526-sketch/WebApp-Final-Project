@@ -10,6 +10,7 @@ from .services.platforms.base import Publisher
 from .services.platforms.instagram import InstagramPublisher
 from .services.platforms.mock import MockPublisher
 from .services.platforms.threads import ThreadsPublisher
+from .services.progress import ProgressHub
 from .services.storage import MemoryStorage, Storage, SupabaseStorage
 
 
@@ -20,12 +21,13 @@ class Services:
     storage: Storage
     ai: AIService
     publishers: dict[str, Publisher] = field(default_factory=dict)
+    progress: ProgressHub = field(default_factory=ProgressHub)
 
 
 def build_ai(settings: Settings) -> AIService:
     """Text from TAIWAN AI RAP (or mock); card background from fal (or a gradient)."""
     text = (
-        MockAI()
+        MockAI(stream_delay=0.04)  # slow enough to see the caption stream in local dev
         if settings.ai_is_mock
         else RapAI(settings.rap_api_key, settings.rap_base_url, settings.rap_text_model, settings.ai_timeout_seconds)
     )

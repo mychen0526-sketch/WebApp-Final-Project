@@ -1,6 +1,6 @@
 """Post status machine. The backend is the only place that changes posts.status.
 
-    generating → editing | generation_failed
+    generating → editing | generation_failed (done, failed, or stopped by the user)
     editing → generating (regenerate) | pending_review (submit)
     pending_review → editing (reject) | approved (approve)
     approved → editing (reject / edit) | publishing (publish) | scheduled (schedule)
@@ -32,6 +32,8 @@ S = Status
 # action -> (allowed source statuses, target status or None when the action deletes the post)
 TRANSITIONS: dict[str, tuple[frozenset[Status], Status | None]] = {
     "regenerate": (frozenset({S.EDITING, S.GENERATION_FAILED}), S.GENERATING),
+    # back to editing when an earlier version exists, else generation_failed (see posts.cancel)
+    "cancel": (frozenset({S.GENERATING}), S.EDITING),
     "save": (frozenset({S.EDITING, S.APPROVED}), S.EDITING),
     "delete": (frozenset({S.EDITING, S.GENERATION_FAILED}), None),
     "submit": (frozenset({S.EDITING}), S.PENDING_REVIEW),
@@ -46,6 +48,7 @@ TRANSITIONS: dict[str, tuple[frozenset[Status], Status | None]] = {
 
 ACTION_LABELS = {
     "regenerate": "重新生成",
+    "cancel": "停止生成",
     "save": "儲存編輯",
     "delete": "刪除",
     "submit": "送審",

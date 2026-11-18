@@ -32,6 +32,18 @@ class Captions(BaseModel):
     instagram: str = Field(min_length=1)
 
 
+class Adjustment(BaseModel):
+    """AI 微調 reply: only the fields the model changed are set."""
+
+    reply: str = Field(min_length=1, max_length=300)
+    title: str | None = Field(default=None, max_length=60)
+    subtitle: str | None = Field(default=None, max_length=60)
+    threads: str | None = Field(default=None, max_length=5000)
+    instagram: str | None = Field(default=None, max_length=5000)
+    style: int | None = Field(default=None, ge=0, le=3)
+    font: int | None = Field(default=None, ge=24, le=44)
+
+
 class Position(BaseModel):
     x: float
     y: float
@@ -79,6 +91,31 @@ class PostCreate(DesignOptions):
 class RegenerateIn(DesignOptions):
     selected: Candidate | None = None
     mode: Literal["short", "friendly", "new"] | None = None
+
+
+class AdjustTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str = Field(max_length=1000)
+
+
+class AdjustCurrent(BaseModel):
+    """What the editor shows right now (may be unsaved)."""
+
+    title: str = Field(default="", max_length=200)
+    subtitle: str = Field(default="", max_length=200)
+    threads: str = Field(default="", max_length=5000)
+    instagram: str = Field(default="", max_length=5000)
+    style: int = Field(default=0, ge=0, le=3)
+    font: int = Field(default=30, ge=12, le=60)
+    palettes: list[str] = Field(default_factory=list, max_length=4)
+
+
+class AdjustIn(BaseModel):
+    instruction: str = Field(max_length=500)
+    current: AdjustCurrent
+    history: list[AdjustTurn] = Field(default_factory=list, max_length=12)
+
+    _instruction = field_validator("instruction")(_strip_required)
 
 
 class PostPatch(BaseModel):

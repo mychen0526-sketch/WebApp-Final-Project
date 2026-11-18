@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Shell, Top } from './components/ui.jsx'
 import { StudioContext } from './context.js'
-import { api, API_BASE } from './lib/api.js'
+import { api, API_BASE, isAbort } from './lib/api.js'
 import { AuthError, currentUser, DEV_MODE, signOut } from './lib/auth.js'
 import { exportCard } from './lib/exportCard.js'
 import { isBusy, layoutName, mergeDraft, patchBody, PLATFORM_NAME, REAL_PLATFORMS, toDraft, withLocalOffset } from './lib/posts.js'
@@ -59,6 +59,7 @@ function editorFields(item, stage) {
     audience: item.audience || undefined,
     prompt: item.goal || undefined,
     platforms: item.destinations?.length ? item.destinations : undefined,
+    versionId: item.post?.versions?.at(-1)?.id ?? null,
   }
 }
 
@@ -71,6 +72,9 @@ function Studio({ user, onLogout }) {
   const [toast, setToast] = useState(null)
   const stateRef = useRef(state)
   stateRef.current = state
+  // What「停止」stops: an in-flight request (candidates) or a generating post.
+  const abortRef = useRef(null)
+  const followRef = useRef({ id: null, cancelled: false })
 
   const notify = useCallback((title, text) => {
     setToast({ title, text })
@@ -132,6 +136,24 @@ function Studio({ user, onLogout }) {
     }
     throw new Error('等太久了，請到內容資料庫重新整理看看')
   }, [upsert])
+
+  // Follow a generating post over the SSE stream (copy appears as it is written);
+  // fall back to polling when the stream cannot be opened.
+  const follow = useCallback(async (id, { load } = {}) => {
+    followRef.current = { id, cancelled: false }
+    const onProgress = (progress) => setState((current) => ({ ...current, progress }))
+    let post
+    try {
+      post = await api.followPost(id, { onProgress })
+    } catch (error) {
+      if (error instanceof AuthError) throw error
+      post = await poll(id, (item) => item.status !== 'generating')
+    } finally {
+      patch({ progress: null })
+    }
+    upsert(post, { load: stateRef.current.activeId === id ? load?.(post) : undefined })
+    return post
+  }, [patch, poll, upsert])
 
   // First load: who am I talking to, and everything this user already has.
   useEffect(() => {
@@ -209,7 +231,9 @@ function Studio({ user, onLogout }) {
     const afterGeneration = (post) => (post.status === 'editing' ? 'edit' : 'write')
     const generationDone = (post) => post.status !== 'generating'
     const reportGeneration = (post) => {
-      if (post.status === 'editing') notify('初稿完成', 'AI 已寫好 Threads / IG 文案與圖卡，可以開始編輯。')
+      if (followRef.current.cancelled) {
+        notify('已停止生成', post.status === 'editing' ? '保留原本的內容。' : '可以換個方向再試。')
+      } else if (post.status === 'editing') notify('初稿完成', 'AI 已寫好 Threads / IG 文案與圖卡，可以開始編輯。')
       else notify('生成失敗', post.generation_error || '請再試一次，或換一個方向。')
     }
 
@@ -262,14 +286,34 @@ function Studio({ user, onLogout }) {
           return
         }
         busy('candidates')
+        const controller = new AbortController()
+        abortRef.current = controller
         try {
-          const { candidates } = await api.candidates(current.prompt, current.tone)
+          const { candidates } = await api.candidates(current.prompt, current.tone, controller.signal)
           patch({ candidates, series: [], activeId: null, stage: 'write', content: '', igCaption: '', title: '', subtitle: '', background: null })
           notify('AI 提出了 3 個方向', '挑一個，AI 就會寫文案並產生圖卡。')
         } catch (error) {
-          fail(error, '產生方向失敗')
+          if (isAbort(error)) notify('已停止', '可以修改主題後再產生。')
+          else fail(error, '產生方向失敗')
         } finally {
+          abortRef.current = null
           idle()
+        }
+      },
+      // 「停止」: abort the pending request, or ask the backend to stop the generating post.
+      async stop() {
+        if (abortRef.current) {
+          abortRef.current.abort()
+          return
+        }
+        const { id, cancelled } = followRef.current
+        if (!id || cancelled) return
+        followRef.current.cancelled = true
+        try {
+          await api.cancel(id) // the stream then ends with the post out of `generating`
+        } catch (error) {
+          followRef.current.cancelled = false
+          if (error.status !== 409) fail(error, '停不下來') // 409: it finished first
         }
       },
       async pickCandidate(candidate) {
@@ -287,7 +331,7 @@ function Studio({ user, onLogout }) {
           })
           upsert(post, { load: 'write' })
           patch({ candidates: [], series: [] })
-          const done = await poll(post.id, generationDone, { load: afterGeneration })
+          const done = await follow(post.id, { load: afterGeneration })
           reportGeneration(done)
         } catch (error) {
           fail(error, '生成失敗')
@@ -336,23 +380,89 @@ function Studio({ user, onLogout }) {
           await save()
           const post = await api.regenerate(stateRef.current.activeId, { mode, ...designOptions() })
           upsert(post)
-          notify('AI 重新生成中', '文案和圖卡都會更新，大約需要半分鐘。')
-          const done = await poll(post.id, generationDone, { load: afterGeneration })
-          reportGeneration(done)
+          const done = await follow(post.id, { load: afterGeneration })
+          if (!followRef.current.cancelled && done.status === 'editing') {
+            notify('新版本完成', `這是第 ${done.versions?.length || 1} 版，可用「‹ ›」切回之前的版本。`)
+          } else {
+            reportGeneration(done)
+          }
         } catch (error) {
           fail(error, '重寫失敗')
         } finally {
           idle()
         }
       },
-      applyLocal(prompt) {
-        if (!editable()) return
-        let { style, title, font } = stateRef.current
-        if (prompt.includes('標題')) title = title.includes('？') ? title : `${title.replace(/[。.!！]$/, '')}？`
-        if (prompt.includes('亮') || prompt.includes('色')) style = (style + 1) % STYLES.length
-        if (prompt.includes('字')) font = Math.min(46, font + 4)
-        patch({ title, style, font, themeName: STYLES[style][2] })
-        notify('已套用局部調整', '只改了標題、色彩或字級，記得存成草稿。')
+      // Load one of the AI versions (posts.versions) into the editor. Not saved until 存成草稿 / 送審.
+      showVersion(index) {
+        const item = activeDraft(stateRef.current)
+        const version = item?.post?.versions?.[index]
+        if (!version || !editable()) return
+        const view = toDraft({
+          ...item.post,
+          title: version.title,
+          caption_threads: version.caption_threads,
+          caption_instagram: version.caption_instagram,
+          canvas_json: version.canvas_json,
+        })
+        const fields = editorFields(view, 'edit')
+        patch({
+          title: fields.title,
+          subtitle: fields.subtitle,
+          content: fields.content,
+          igCaption: fields.igCaption,
+          canvas: fields.canvas,
+          background: fields.background,
+          layout: fields.layout,
+          style: fields.style,
+          font: fields.font,
+          templateId: fields.templateId,
+          themeName: fields.themeName,
+          versionId: version.id,
+        })
+      },
+      // AI 微調: one chat turn → {reply, ...changed fields}. Errors other than login are for the caller.
+      async adjust(instruction, history, signal) {
+        const current = stateRef.current
+        if (!current.activeId || !editable()) return null
+        try {
+          return await api.adjust(current.activeId, {
+            instruction,
+            history,
+            current: {
+              title: current.title,
+              subtitle: current.subtitle,
+              threads: current.content,
+              instagram: current.igCaption,
+              style: current.style,
+              font: current.font,
+              palettes: STYLES.map((item) => item[2]),
+            },
+          }, signal)
+        } catch (error) {
+          if (error instanceof AuthError) {
+            onLogout()
+            return null
+          }
+          throw error
+        }
+      },
+      // Put AI 微調 changes into the editor; returns the old values so the turn can be undone.
+      applyChanges(changes) {
+        const current = stateRef.current
+        const fields = { title: 'title', subtitle: 'subtitle', threads: 'content', instagram: 'igCaption', style: 'style', font: 'font' }
+        const next = {}
+        const before = {}
+        for (const [key, field] of Object.entries(fields)) {
+          if (changes[key] === undefined) continue
+          next[field] = changes[key]
+          before[field] = current[field]
+        }
+        if (next.style !== undefined) {
+          next.themeName = STYLES[next.style]?.[2] || current.themeName
+          before.themeName = current.themeName
+        }
+        patch(next)
+        return before
       },
       async saveDraft() {
         if (!editable() || !stateRef.current.activeId) return
@@ -647,7 +757,7 @@ function Studio({ user, onLogout }) {
         }
       },
     }
-  }, [state, user, notify, patch, onLogout, refreshPosts, refreshAccounts, fail, upsert, poll])
+  }, [state, user, notify, patch, onLogout, refreshPosts, refreshAccounts, fail, upsert, poll, follow])
 
   const Page = PAGES[state.page] || WorkspacePage
   const active = activeDraft(state)

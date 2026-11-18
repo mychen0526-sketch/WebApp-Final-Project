@@ -10,14 +10,16 @@ import json
 import logging
 import re
 import struct
+import time
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
 import httpx
 from pydantic import TypeAdapter, ValidationError
 
-from ..schemas import Candidate, Captions, TextElement
+from ..schemas import AdjustIn, Adjustment, Candidate, Captions, TextElement
 from . import design
 
 log = logging.getLogger(__name__)
@@ -34,6 +36,11 @@ class AIError(RuntimeError):
     """Generation failed (API error, timeout, or output that could not be parsed)."""
 
 
+# Called with the whole reply so far while a streamed reply is being written.
+# It may raise (e.g. progress.Cancelled) to stop the request early.
+OnText = Callable[[str], None]
+
+
 def render(template_name: str, values: dict[str, str]) -> str:
     text = (PROMPT_DIR / template_name).read_text(encoding="utf-8")
     for key, value in values.items():
@@ -48,8 +55,15 @@ def candidate_vars(candidate: Candidate) -> dict[str, str]:
 class AIService(Protocol):
     def candidates(self, goal: str, tone: str | None) -> list[Candidate]: ...
     def captions(
-        self, goal: str, tone: str | None, audience: str | None, candidate: Candidate, mode: str | None = None
+        self,
+        goal: str,
+        tone: str | None,
+        audience: str | None,
+        candidate: Candidate,
+        mode: str | None = None,
+        on_text: OnText | None = None,
     ) -> Captions: ...
+    def adjust(self, body: AdjustIn) -> Adjustment: ...
     def card_texts(self, candidate: Candidate, layout: design.Layout, scheme: design.ColorScheme) -> list[TextElement]: ...
     def image(
         self, candidate: Candidate, visual_style: str, layout: design.Layout, scheme: design.ColorScheme
@@ -70,6 +84,26 @@ def prompt_captions(goal, tone, audience, candidate, mode) -> str:
             "audience": audience or "創業者與科技從業者",
             "extra": REWRITE_HINTS.get(mode or "", "無"),
             **candidate_vars(candidate),
+        },
+    )
+
+
+def prompt_adjust(body: AdjustIn) -> str:
+    current = body.current
+    palettes = "、".join(f"{i} 號 {name}" for i, name in enumerate(current.palettes)) or "0～3 號"
+    history = "\n".join(f"{'使用者' if t.role == 'user' else '助理'}：{t.text}" for t in body.history[-8:]) or "（無）"
+    return render(
+        "e_adjust.txt",
+        {
+            "title": current.title or "（空白）",
+            "subtitle": current.subtitle or "（空白）",
+            "threads": current.threads or "（空白）",
+            "instagram": current.instagram or "（空白）",
+            "style": str(current.style),
+            "palettes": palettes,
+            "font": str(current.font),
+            "history": history,
+            "instruction": body.instruction,
         },
     )
 
@@ -131,13 +165,15 @@ class RapAI:
         self.model = model
         self.timeout = timeout_seconds
 
-    def _chat(self, prompt: str, temperature: float = 0.7) -> str:
+    def _chat(self, prompt: str, temperature: float = 0.7, on_text: OnText | None = None) -> str:
         body = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": temperature,
             "max_tokens": 4096,
         }
+        if on_text is not None:
+            return self._chat_stream(body, on_text)
         try:
             resp = httpx.post(
                 f"{self.base_url}/chat/completions",
@@ -156,11 +192,44 @@ class RapAI:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise AIError(f"LLM 回應格式無法解析：{resp.text[:300]}") from exc
 
-    def _json(self, prompt: str, adapter: TypeAdapter, attempts: int = 2):
+    def _chat_stream(self, body: dict, on_text: OnText) -> str:
+        """Same request with `stream: true`; OpenAI-style SSE chunks carry `choices[0].delta.content`."""
+        parts: list[str] = []
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                json={**body, "stream": True},
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=self.timeout,
+            ) as resp:
+                if resp.status_code == 401:
+                    raise AIError("LLM 呼叫失敗：RAP API 金鑰無效（401）")
+                if resp.status_code >= 400:
+                    resp.read()
+                    raise AIError(f"LLM 呼叫失敗（RAP {resp.status_code}）：{resp.text[:300]}")
+                for line in resp.iter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        delta = json.loads(data)["choices"][0].get("delta", {}).get("content")
+                    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                        continue
+                    if delta:
+                        parts.append(delta)
+                        on_text("".join(parts))
+        except httpx.HTTPError as exc:
+            raise AIError(f"LLM 呼叫失敗：{exc}") from exc
+        return "".join(parts)
+
+    def _json(self, prompt: str, adapter: TypeAdapter, attempts: int = 2, on_text: OnText | None = None):
         last: Exception | None = None
         for _ in range(attempts):
             try:
-                return adapter.validate_python(extract_json(self._chat(prompt)))
+                return adapter.validate_python(extract_json(self._chat(prompt, on_text=on_text)))
             except (json.JSONDecodeError, ValidationError) as exc:
                 log.warning("RAP returned unusable JSON, retrying: %s", exc)
                 last = exc
@@ -172,8 +241,11 @@ class RapAI:
             raise AIError("LLM 回傳的候選少於 3 個")
         return result[:3]
 
-    def captions(self, goal, tone, audience, candidate, mode=None):
-        return self._json(prompt_captions(goal, tone, audience, candidate, mode), TypeAdapter(Captions))
+    def captions(self, goal, tone, audience, candidate, mode=None, on_text=None):
+        return self._json(prompt_captions(goal, tone, audience, candidate, mode), TypeAdapter(Captions), on_text=on_text)
+
+    def adjust(self, body):
+        return self._json(prompt_adjust(body), TypeAdapter(Adjustment))
 
     def card_texts(self, candidate, layout, scheme):
         texts = self._json(prompt_card_texts(candidate, layout, scheme), TypeAdapter(list[TextElement]))
@@ -195,8 +267,9 @@ class RapAI:
 class MockAI:
     """Deterministic output so the full flow works without an API key."""
 
-    def __init__(self) -> None:
+    def __init__(self, stream_delay: float = 0.0) -> None:
         self.fail_next = False  # tests flip this to simulate E1
+        self.stream_delay = stream_delay  # seconds between streamed chunks (0 in tests)
 
     def _maybe_fail(self):
         if self.fail_next:
@@ -212,14 +285,53 @@ class MockAI:
             Candidate(title="觀點與預測", angle=f"從「{topic}」推演接下來半年的產業走向", hook="我的預測可能不太一樣"),
         ]
 
-    def captions(self, goal, tone, audience, candidate, mode=None):
+    def captions(self, goal, tone, audience, candidate, mode=None, on_text=None):
         self._maybe_fail()
         lines = [candidate.hook, "", candidate.angle + "。", "", "你怎麼看？留言聊聊 👇"]
         if mode == "short":
             lines = [candidate.hook, "", candidate.angle + "。"]
+        elif mode == "friendly":
+            lines = ["跟你分享一件事 👋", "", *lines]
+        elif mode == "new":
+            lines = [candidate.angle + "？", "", candidate.hook, "", "想聽聽你的看法 💬"]
         threads = "\n".join(lines)
         instagram = threads + "\n\n#AI #科技趨勢 #新創 #產品開發"
+        if on_text is not None:  # pretend to stream, a few characters at a time
+            raw = json.dumps({"threads": threads, "instagram": instagram}, ensure_ascii=False)
+            for end in range(4, len(raw) + 4, 4):
+                on_text(raw[:end])
+                if self.stream_delay:
+                    time.sleep(self.stream_delay)
         return Captions(threads=threads, instagram=instagram)
+
+    def adjust(self, body):
+        """Keyword rules standing in for the model, so 微調 works without an API key."""
+        self._maybe_fail()
+        current, text = body.current, body.instruction
+        out: dict = {}
+        done: list[str] = []
+        if "標題" in text and ("問" in text or "？" in text or "?" in text):
+            title = current.title.rstrip("。.!！")
+            out["title"] = title if title.endswith(("？", "?")) else f"{title}？"
+            done.append("標題改成問句")
+        if "短" in text:
+            paragraphs = current.threads.split("\n\n")
+            out["threads"] = (
+                "\n\n".join(paragraphs[:2]) if len(paragraphs) > 2 else current.threads[: max(20, len(current.threads) // 2)]
+            )
+            done.append("Threads 文案縮短")
+        if "色" in text or "亮" in text:
+            out["style"] = (current.style + 1) % 4
+            done.append("換了配色")
+        if "大" in text and "字" in text:
+            out["font"] = min(44, current.font + 4)
+            done.append("標題字放大")
+        elif "小" in text and "字" in text:
+            out["font"] = max(24, current.font - 4)
+            done.append("標題字縮小")
+        if not done:
+            return Adjustment(reply="示範模式只認得：標題改問句、改短、換顏色、字放大／縮小。")
+        return Adjustment(reply="已" + "、".join(done) + "。", **out)
 
     def card_texts(self, candidate, layout, scheme):
         self._maybe_fail()

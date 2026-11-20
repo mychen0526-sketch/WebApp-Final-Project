@@ -7,13 +7,14 @@
 【配色】{color_scheme.name}（{color_scheme.mood}）
 
 【請產生剛好 3 個文字元素】
-1. headline 主標題：一句話點出主題，6～14 個字，例如「OpenAI 新公告」
-2. highlight 重點：最關鍵的一個觀點或影響，6～12 個字，例如「新創的三個機會」
-3. description 補充：一句說明，12～24 個字
+1. headline 主標題：一句話點出主題，{headline_rule}
+2. highlight 重點：最關鍵的一個觀點或影響，{highlight_rule}
+3. description 補充：一句說明，{description_rule}
 
 【規則】
 - 只用貼文方向裡的資訊，不得新增數字或事實
 - 字要短、要能一眼讀完，不要寫成段落
+- 語言：{language_rule}
 - 座標、字級、字體、顏色必須完全照下方範例的數值，只改 text
 
 【輸出格式】只輸出 JSON 陣列，不要任何說明：

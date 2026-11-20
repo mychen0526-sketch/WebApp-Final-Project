@@ -41,12 +41,16 @@ function DragBlock({ pos, label, onMove, draggable, children }) {
   )
 }
 
-export function DragCanvas({ style, company, title, subtitle = '', font, layout, onLayout, compact = false, background = null }) {
+// A news photo gets a dark gradient on the text side (so white text stays readable) and a credit line.
+export function DragCanvas({ style, company, title, subtitle = '', font, layout, onLayout, compact = false, background = null, credit = null }) {
   const draggable = Boolean(onLayout)
   const vars = { '--a': style[0], '--b': style[1], '--size': `${font}px` }
   if (background) vars.backgroundImage = `url("${background}")`
+  const textBelow = layout.text.y > 50
   return (
     <article className={`artboard is-free${compact ? ' is-compact' : ''}${background ? ' has-template' : ''}`} style={vars}>
+      {background && credit ? <div className={textBelow ? 'art-scrim from-bottom' : 'art-scrim from-top'} aria-hidden="true" /> : null}
+      {background && credit ? <span className={textBelow ? 'art-credit at-top' : 'art-credit'}>{credit}</span> : null}
       {background ? null : (
         <DragBlock draggable={draggable} pos={layout.image} label="拖曳圖形" onMove={(image) => onLayout?.({ ...layout, image })}>
           <div className="art-shape" />

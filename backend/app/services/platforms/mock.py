@@ -1,4 +1,4 @@
-"""Simulated publisher (MOCK_PUBLISH=true): full flow without Meta app review (Milestone E11)."""
+"""Simulated publisher (MOCK_PUBLISH=true): full flow without Meta / LinkedIn app review (Milestone E11)."""
 import uuid
 
 from .base import AccountToken, PublishError, PublishResult, expires_at
@@ -33,9 +33,13 @@ class MockPublisher:
         if self.fail_with:
             raise PublishError(self.fail_with)
         post_id = uuid.uuid4().hex[:12]
-        host = "threads.net" if self.platform == "threads" else "instagram.com"
+        if self.platform == "linkedin":
+            permalink = f"https://www.linkedin.com/feed/update/urn:li:share:mock-{post_id}/"
+        else:
+            host = "threads.net" if self.platform == "threads" else "instagram.com"
+            permalink = f"https://www.{host}/p/mock-{post_id}"
         return PublishResult(
             external_post_id=f"mock-{post_id}",
-            permalink=f"https://www.{host}/p/mock-{post_id}",
+            permalink=permalink,
             container_id=f"mock-container-{post_id}",
         )

@@ -56,12 +56,21 @@ DEFAULT_STYLE = 0
 DEFAULT_VISUAL_STYLE = "abstract"
 
 
-def resolve(layout: str | None, style: int | None, visual_style: str | None) -> dict:
+def resolve(
+    layout: str | None,
+    style: int | None,
+    visual_style: str | None,
+    image_mode: str | None = None,
+    reference: dict | None = None,
+) -> dict:
     """Return the design choice as a JSON-able dict (stored in canvas_json)."""
     return {
         "layout": layout or DEFAULT_LAYOUT,
         "style": DEFAULT_STYLE if style is None else style,
         "visual_style": visual_style or DEFAULT_VISUAL_STYLE,
+        # a real picture is only used when there is a reference to take it from
+        "image_mode": (image_mode or "photo") if reference else "ai",
+        "reference": reference,
     }
 
 

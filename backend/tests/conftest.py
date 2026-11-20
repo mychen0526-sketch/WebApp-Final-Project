@@ -7,6 +7,8 @@ from app.main import create_app
 from app.repo.memory_repo import MemoryRepo
 from app.services.ai import MockAI
 from app.services.platforms.mock import MockPublisher
+from app.services.research import MockResearch
+from app.services.webfetch import FetchError, Fetched
 from app.services.storage import MemoryStorage
 
 USER = "11111111-1111-1111-1111-111111111111"
@@ -14,6 +16,33 @@ OTHER = "22222222-2222-2222-2222-222222222222"
 JWT_SECRET = "test-jwt-secret-at-least-32-bytes-long!!"
 
 CANDIDATE = {"title": "新創的影響", "angle": "分析這次公告對 AI 新創商業化的影響", "hook": "如果你是新創，先想這三件事"}
+
+
+def jpeg_bytes(width: int = 1200, height: int = 800) -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), (40, 90, 160)).save(out, "JPEG")
+    return out.getvalue()
+
+
+class FakeFetcher:
+    """No network in tests: URLs map to canned responses; anything else fails like a dead link."""
+
+    def __init__(self) -> None:
+        self.pages: dict[str, Fetched] = {}
+        self.calls: list[str] = []
+
+    def add(self, url: str, data: bytes, content_type: str = "image/jpeg") -> None:
+        self.pages[url] = Fetched(url=url, content_type=content_type, data=data)
+
+    def get(self, url, max_bytes, accept=()):
+        self.calls.append(url)
+        if url not in self.pages:
+            raise FetchError("HTTP 404")
+        return self.pages[url]
 
 
 @pytest.fixture
@@ -34,7 +63,9 @@ def services() -> Services:
         repo=MemoryRepo(),
         storage=MemoryStorage("http://testserver"),
         ai=MockAI(),
-        publishers={"threads": MockPublisher("threads"), "instagram": MockPublisher("instagram")},
+        publishers={p: MockPublisher(p) for p in ("threads", "instagram", "linkedin")},
+        research=MockResearch(),
+        fetcher=FakeFetcher(),
     )
 
 

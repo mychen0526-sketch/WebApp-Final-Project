@@ -1,4 +1,4 @@
-"""P2: social account binding (Threads / Instagram OAuth). Tokens never leave the backend."""
+"""P2: social account binding (Threads / Instagram / LinkedIn OAuth). Tokens never leave the backend."""
 from datetime import timedelta
 from typing import Literal
 from urllib.parse import urlencode
@@ -15,7 +15,7 @@ from ..services.platforms.base import OAuthError
 from ..timeutil import parse_ts, utcnow
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
-PlatformParam = Literal["threads", "instagram"]
+PlatformParam = Literal["threads", "instagram", "linkedin"]
 STATE_TTL = timedelta(minutes=10)
 
 

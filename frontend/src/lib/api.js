@@ -102,6 +102,7 @@ async function followPost(id, { onProgress, signal } = {}) {
 export const api = {
   health: () => request('/health', { auth: false }),
   candidates: (goal, tone, signal) => json('POST')('/api/candidates', { goal, tone }, { signal }),
+  research: (query, signal) => json('POST')('/api/research', { query }, { signal }),
   listPosts: () => request('/api/posts'),
   getPost: (id) => request(`/api/posts/${id}`),
   createPost: (body) => json('POST')('/api/posts', body),

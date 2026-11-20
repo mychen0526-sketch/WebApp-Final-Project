@@ -17,6 +17,7 @@ function describe(changes, was) {
   if (changes.subtitle !== undefined) lines.push(`副標：「${clip(was.subtitle)}」→「${clip(changes.subtitle)}」`)
   if (changes.threads !== undefined) lines.push(`Threads 文案：改寫（${[...was.content].length} → ${[...changes.threads].length} 字）`)
   if (changes.instagram !== undefined) lines.push(`IG 文案：改寫（${[...changes.instagram].length} 字）`)
+  if (changes.linkedin !== undefined) lines.push(`LinkedIn 文案：改寫（${[...changes.linkedin].length} 字）`)
   if (changes.style !== undefined) lines.push(`配色：${STYLES[was.style]?.[2]} → ${STYLES[changes.style]?.[2]}`)
   if (changes.font !== undefined) lines.push(`標題字級：${was.font} → ${changes.font}`)
   return lines

@@ -15,6 +15,7 @@ POST_DEFAULTS = {
     "selected_prompt": None,
     "caption_threads": None,
     "caption_instagram": None,
+    "caption_linkedin": None,
     "canvas_json": None,
     "versions": [],
     "status": "generating",

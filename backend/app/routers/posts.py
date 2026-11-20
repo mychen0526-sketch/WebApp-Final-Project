@@ -11,6 +11,7 @@ from ..auth import get_current_user, get_services
 from ..container import Services
 from ..errors import Conflict, NotFound, Unprocessable
 from ..schemas import (
+    LANGUAGES,
     STATUS_VALUES,
     AdjustIn,
     ApproveIn,
@@ -24,7 +25,7 @@ from ..schemas import (
 from ..services import design, safety
 from ..services.ai import AIError
 from ..services.generation import run_generation
-from ..services.publishing import publish_post
+from ..services.publishing import caption_for, publish_post
 from ..services.storage import image_path
 from ..state import Status, allowed_from, require
 from ..timeutil import now_iso, parse_ts, utcnow
@@ -36,6 +37,7 @@ router = APIRouter(prefix="/api/posts", tags=["posts"])
 
 THREADS_MAX_CHARS = 500
 INSTAGRAM_MAX_CHARS = 2200
+LINKEDIN_MAX_CHARS = 3000
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg"}
 STREAM_LIMIT_SECONDS = 10 * 60
@@ -79,13 +81,28 @@ def _with_template(services: Services, user_id: str, choice: dict, template_id: 
     return choice
 
 
+def post_language(post: dict) -> str:
+    """The copy language chosen when the post was made (kept in canvas_json; older posts are zh)."""
+    language = (post.get("canvas_json") or {}).get("language")
+    return language if language in LANGUAGES else "zh"
+
+
 def _design_from(services: Services, user_id: str, post: dict, body) -> dict:
     canvas = post.get("canvas_json") or {}
+    # explicit null drops the news picture; leaving the field out keeps the previous one
+    if "reference" in body.model_fields_set:
+        reference = body.reference.model_dump() if body.reference else None
+    else:
+        reference = canvas.get("reference")
+    image_mode = body.image_mode or (canvas.get("image_mode") if canvas.get("image_mode") in ("photo", "blend") else None)
     choice = design.resolve(
         body.layout or canvas.get("layout"),
         body.style if body.style is not None else canvas.get("style"),
         body.visual_style or canvas.get("visual_style"),
+        image_mode,
+        reference,
     )
+    choice["language"] = body.language or post_language(post)
     if "template_id" in body.model_fields_set:  # explicit null drops the template
         return _with_template(services, user_id, choice, body.template_id)
     if canvas.get("template_id"):  # keep the previous template, even if it was removed from the picker
@@ -127,7 +144,10 @@ def create_post(
     services: Services = Depends(get_services),
 ):
     """P3 → P4: create the post in `generating` and generate copy + card in the background."""
-    choice = _with_template(services, user_id, design.resolve(body.layout, body.style, body.visual_style), body.template_id)
+    reference = body.reference.model_dump() if body.reference else None
+    choice = design.resolve(body.layout, body.style, body.visual_style, body.image_mode, reference)
+    choice["language"] = body.language or "zh"
+    choice = _with_template(services, user_id, choice, body.template_id)
     candidates = body.candidates or [body.selected]
     post = services.repo.create_post(
         {
@@ -256,7 +276,7 @@ def adjust(
     if post["status"] != Status.EDITING:
         raise Conflict("只有草稿可以微調，請先退回修改", detail={"status": post["status"], "action": "adjust"})
     try:
-        result = services.ai.adjust(body)
+        result = services.ai.adjust(body, post_language(post))
     except AIError as exc:
         raise GenerationFailed(str(exc)) from exc
     return result.model_dump(exclude_none=True)
@@ -342,6 +362,7 @@ def submit(
     problems = _account_problems(services, user_id, body.platforms)
     threads_caption = post.get("caption_threads") or ""
     ig_caption = post.get("caption_instagram") or ""
+    linkedin_caption = caption_for(post, "linkedin")
     images = services.repo.list_images(post_id)
     if "threads" in body.platforms:
         if len(threads_caption) > THREADS_MAX_CHARS:
@@ -353,6 +374,11 @@ def submit(
             problems.append(f"Instagram 文案 {len(ig_caption)} 字，超過上限 {INSTAGRAM_MAX_CHARS}")
         if not images:
             problems.append("Instagram 貼文一定要有圖片")
+    if "linkedin" in body.platforms:
+        if len(linkedin_caption) > LINKEDIN_MAX_CHARS:
+            problems.append(f"LinkedIn 文案 {len(linkedin_caption)} 字，超過上限 {LINKEDIN_MAX_CHARS}")
+        if not linkedin_caption.strip() and not images:
+            problems.append("LinkedIn 貼文需要文字或圖片")
     if problems:
         raise Unprocessable("還不能送審：" + "；".join(problems), detail={"problems": problems}, code="submit_blocked")
     updated = _transition(

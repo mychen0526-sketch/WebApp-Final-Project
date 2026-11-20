@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     # Card background: FLUX.1 [schnell] on fal.ai (~US$0.003/image). No key → plain gradient.
     fal_api_key: str = ""
     fal_image_model: str = "fal-ai/flux/schnell"
+    # 「AI 融合」: image-to-image on a real news photo (~US$0.025/MP). Same fal key.
+    fal_blend_model: str = "fal-ai/flux/dev/image-to-image"
+    fal_blend_strength: float = 0.82  # 0 = keep the photo, 1 = ignore it
+
+    # News / trend search with lead pictures. "auto": Tavily when TAVILY_API_KEY is set, else the
+    # free Bing News RSS feed; "mock": demo results (no network); "off": search disabled.
+    search_backend: str = "auto"
+    tavily_api_key: str = ""
+    # Bing News markets, comma separated; all are searched and the results interleaved
+    search_market: str = "zh-TW,en-US"
 
     # Mock switches: run the whole flow without external services
     mock_ai: bool = False
@@ -46,6 +56,12 @@ class Settings(BaseSettings):
     instagram_redirect_uri: str = "http://127.0.0.1:8000/api/accounts/instagram/callback"
     instagram_api_version: str = "v23.0"
 
+    # LinkedIn: "Sign In with LinkedIn using OpenID Connect" + "Share on LinkedIn" products
+    linkedin_client_id: str = ""
+    linkedin_client_secret: str = ""
+    linkedin_redirect_uri: str = "http://127.0.0.1:8000/api/accounts/linkedin/callback"
+    linkedin_api_version: str = "202605"  # YYYYMM sent as the LinkedIn-Version header
+
     # Background work
     scheduler_enabled: bool = True
     scheduler_interval_seconds: int = 30
@@ -60,6 +76,14 @@ class Settings(BaseSettings):
     @property
     def ai_is_mock(self) -> bool:
         return self.mock_ai or not self.rap_api_key
+
+    @property
+    def search_mode(self) -> str:
+        if self.search_backend != "auto":
+            return self.search_backend
+        if self.mock_ai:
+            return "mock"
+        return "tavily" if self.tavily_api_key else "rss"
 
     @property
     def image_backend(self) -> str:

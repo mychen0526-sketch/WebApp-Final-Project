@@ -14,16 +14,22 @@ log = logging.getLogger(__name__)
 
 
 def publish_image_url(images: list[dict]) -> str | None:
-    """Prefer the latest canvas export (has the text overlay); fall back to upload, template, then AI image."""
-    for source in ("exported", "uploaded", "template", "generated"):
+    """Prefer the latest canvas export (has the text overlay); fall back to upload, template, AI image, news photo."""
+    for source in ("exported", "uploaded", "template", "generated", "reference"):
         matches = [i for i in images if i["source"] == source]
         if matches:
             return max(matches, key=lambda i: i["created_at"])["public_url"]
     return None
 
 
+CAPTION_FIELD = {"threads": "caption_threads", "instagram": "caption_instagram", "linkedin": "caption_linkedin"}
+
+
 def caption_for(post: dict, platform: str) -> str:
-    return (post.get("caption_threads") if platform == "threads" else post.get("caption_instagram")) or ""
+    text = post.get(CAPTION_FIELD[platform]) or ""
+    if platform == "linkedin" and not text:  # posts made before LinkedIn existed
+        text = post.get("caption_instagram") or post.get("caption_threads") or ""
+    return text
 
 
 def final_status(platforms: list[str], publications: list[dict]) -> Status:

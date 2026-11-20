@@ -14,8 +14,10 @@ export const STATUS_LABEL = {
 }
 
 // Platforms the backend can really publish to. X and Telegram stay demo-only in the UI.
-export const REAL_PLATFORMS = { Threads: 'threads', Instagram: 'instagram' }
-export const PLATFORM_NAME = { threads: 'Threads', instagram: 'Instagram' }
+export const REAL_PLATFORMS = { Threads: 'threads', Instagram: 'instagram', LinkedIn: 'linkedin' }
+export const PLATFORM_NAME = { threads: 'Threads', instagram: 'Instagram', linkedin: 'LinkedIn' }
+// The real platforms in display order (copy tabs, previews)
+export const REAL_PLATFORM_LIST = Object.keys(REAL_PLATFORMS)
 export const isRealPlatform = (name) => Boolean(REAL_PLATFORMS[name])
 
 const pad = (n) => String(n).padStart(2, '0')
@@ -74,7 +76,7 @@ function textOf(canvas, type) {
 export function toDraft(post) {
   const canvas = post.canvas_json || {}
   const images = post.images || []
-  const generated = images.filter((item) => item.source === 'generated' || item.source === 'template')
+  const generated = images.filter((item) => ['generated', 'template', 'reference'].includes(item.source))
   return {
     id: post.id,
     post,
@@ -85,9 +87,16 @@ export function toDraft(post) {
     subtitle: canvas.ui?.subtitle ?? textOf(canvas, 'highlight'),
     content: post.caption_threads || '',
     igCaption: post.caption_instagram || '',
+    // posts made before LinkedIn existed fall back to the IG copy (the backend publishes the same)
+    linkedinCaption: post.caption_linkedin || post.caption_instagram || '',
+    reference: canvas.reference || null,
+    imageMode: canvas.image_mode || 'ai',
+    credit: canvas.credit || null,
+    imageNote: canvas.image_note || null,
     goal: post.goal,
     tone: post.tone,
     audience: post.audience,
+    language: canvas.language || 'zh',
     date: shortDate(post.updated_at || post.created_at),
     when: post.scheduled_at ? localStamp(post.scheduled_at) : null,
     scheduledAt: post.scheduled_at || null,
@@ -121,6 +130,7 @@ export function patchBody(state) {
     title: state.title.replaceAll('\n', ' ').slice(0, 200),
     caption_threads: state.content,
     caption_instagram: state.igCaption,
+    caption_linkedin: state.linkedinCaption,
     tone: state.tone,
     audience: state.audience,
     canvas_json: {

@@ -9,6 +9,9 @@ Threads 文案：
 Instagram 文案：
 {instagram}
 
+LinkedIn 文案：
+{linkedin}
+
 圖卡配色（目前第 {style} 號）：{palettes}
 標題字級：{font}（可用範圍 24～44）
 
@@ -19,11 +22,12 @@ Instagram 文案：
 {instruction}
 
 【規則】
-- 繁體中文，台灣用語；不得編造數字、日期、引言或來源
+- 語言：{language_rule}
+- 不得編造數字、日期、引言或來源
 - 圖卡標題 20 字以內、副標 30 字以內
-- Threads 380 字以內不加 hashtag；Instagram 文末保留 3～5 個 hashtag
+- Threads {threads_limit}以內不加 hashtag；Instagram 文末保留 3～5 個 hashtag；LinkedIn 3000 字以內、文末 3 個 hashtag
 - 只輸出有改動的欄位；沒改的欄位不要出現
 - reply 用一句話告訴使用者你改了什麼；若要求做不到，說明原因且不輸出其他欄位
 
 【輸出格式】只輸出 JSON，不要任何說明：
-{"reply": "一句話說明", "title": "新標題", "subtitle": "新副標", "threads": "新 Threads 文案", "instagram": "新 IG 文案", "style": 0, "font": 32}
+{"reply": "一句話說明", "title": "新標題", "subtitle": "新副標", "threads": "新 Threads 文案", "instagram": "新 IG 文案", "linkedin": "新 LinkedIn 文案", "style": 0, "font": 32}

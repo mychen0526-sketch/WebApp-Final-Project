@@ -2,11 +2,14 @@ import { useState } from 'react'
 import { AdjustChat } from '../components/AdjustChat.jsx'
 import { DragCanvas } from '../components/DragCanvas.jsx'
 import { useStudio } from '../context.js'
-import { defaultScheduleInput, isRealPlatform, PLATFORM_NAME } from '../lib/posts.js'
+import { defaultScheduleInput, isRealPlatform, PLATFORM_NAME, REAL_PLATFORM_LIST } from '../lib/posts.js'
+import { NewsCard } from './Discover.jsx'
 import {
   activeDraft,
   AUDIENCES,
   cardBackground,
+  cardCredit,
+  LANGUAGES,
   layoutPreset,
   PLATFORM_HINT,
   PLATFORMS,
@@ -19,6 +22,12 @@ import {
 } from '../studio.js'
 
 const THREADS_LIMIT = 500
+const LINKEDIN_LIMIT = 3000
+const IMAGE_MODES = [
+  ['photo', '用新聞原圖', '照片直接當底圖，圖卡標註出處'],
+  ['blend', 'AI 融合', '保留照片構圖，重繪成品牌配色與風格'],
+  ['ai', '不用這張圖', '只參考內容，底圖由 AI 產生'],
+]
 const BUSY_TEXT = {
   candidates: 'AI 正在想 3 個方向…',
   generating: 'AI 正在寫文案、產生圖卡（約 20–60 秒）…',
@@ -55,7 +64,7 @@ function GenerationProgress() {
       </div>
       <div className="row">
         <span className="spinner" />
-        <span className="meta grow">{progress?.stage === 'image' ? '底圖約需 10–40 秒' : '文案寫好後會產生圖卡'}</span>
+        <span className="meta grow">{progress?.stage === 'image' ? (state.reference && state.imageMode !== 'ai' ? '處理新聞圖片中…' : '底圖約需 10–40 秒') : '文案寫好後會產生圖卡'}</span>
         <button className="btn" type="button" onClick={stop}>停止</button>
       </div>
     </div>
@@ -121,6 +130,73 @@ function StageBar() {
   )
 }
 
+// The article this post is based on, and how its picture is used (write + edit stages).
+function ReferencePanel({ editing = false }) {
+  const { state, searchNews, attachReference, setImageMode, clearReference } = useStudio()
+  const [query, setQuery] = useState('')
+  const ref = state.reference
+  const locked = Boolean(state.busy)
+
+  if (ref) {
+    return (
+      <div className="reference-panel">
+        <div className="reference-head">
+          {ref.image_url ? <img src={ref.image_url} alt="" referrerPolicy="no-referrer" /> : null}
+          <div className="grow">
+            <b>{ref.title}</b>
+            <div className="meta">
+              {[ref.source, ref.published].filter(Boolean).join(' · ')}
+              {' · '}<a href={ref.url} target="_blank" rel="noreferrer">原文</a>
+            </div>
+          </div>
+          <button className="link" type="button" disabled={locked} onClick={clearReference}>移除</button>
+        </div>
+        {ref.image_url ? (
+          <div className="mode-row" role="radiogroup" aria-label="新聞圖片的用法">
+            {IMAGE_MODES.map(([id, label, hint]) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={state.imageMode === id}
+                className={state.imageMode === id ? 'mode on' : 'mode'}
+                disabled={locked}
+                title={hint}
+                onClick={() => setImageMode(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : <p className="meta">這則新聞沒有圖片，只會參考內容。</p>}
+        {state.templateId ? <p className="meta">目前套用了圖片模板，模板會優先當底圖。</p> : null}
+        {editing ? <p className="meta">圖片用法改了之後，按「換一個版本」重新產生圖卡。</p> : null}
+      </div>
+    )
+  }
+
+  const results = state.research.results.slice(0, 4)
+  const submit = (event) => {
+    event.preventDefault()
+    searchNews(query || state.prompt.slice(0, 40))
+  }
+  return (
+    <div className="reference-panel">
+      <form className="row search-row" onSubmit={submit}>
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋相關新聞與圖片（空白則用主題）" aria-label="搜尋新聞" />
+        <button className="btn" type="submit" disabled={state.research.loading || locked}>{state.research.loading ? '搜尋中…' : '搜尋'}</button>
+      </form>
+      {results.length ? (
+        <div className="news-grid compact">
+          {results.map((item) => (
+            <NewsCard key={item.url} item={item} compact onUse={attachReference} onOpen={() => window.open(item.url, '_blank', 'noreferrer')} />
+          ))}
+        </div>
+      ) : <p className="meta">加上一則真實新聞，AI 會引用它的內容，圖卡也能用它的照片。</p>}
+    </div>
+  )
+}
+
 function Canvas({ draggable, compact = false }) {
   const { state, moveLayout } = useStudio()
   const style = STYLES[state.style] || STYLES[0]
@@ -135,6 +211,7 @@ function Canvas({ draggable, compact = false }) {
       layout={layout}
       compact={compact}
       background={cardBackground(state)}
+      credit={cardCredit(state)}
       onLayout={draggable ? moveLayout : undefined}
     />
   )
@@ -217,6 +294,19 @@ function WriteStage() {
           <select value={state.audience} onChange={(event) => patch({ audience: event.target.value })} style={{ width: 'auto' }}>
             {[...new Set([state.audience, ...AUDIENCES])].map((item) => <option key={item}>{item}</option>)}
           </select>
+          <select
+            value={state.language || 'zh'}
+            onChange={(event) => patch({ language: event.target.value })}
+            style={{ width: 'auto' }}
+            aria-label="文案語言"
+            title={LANGUAGES.find(([id]) => id === (state.language || 'zh'))?.[2]}
+          >
+            {LANGUAGES.map(([id, label]) => <option key={id} value={id}>文案：{label}</option>)}
+          </select>
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <span className="field-label">參考新聞與圖片 <span className="meta">（選填）</span></span>
+          <ReferencePanel />
         </div>
         {state.busy !== 'generating' ? <Busy /> : null}
         {active?.status === '生成失敗' ? <p className="notice bad" style={{ marginTop: 12 }}>生成失敗：{active.error}</p> : null}
@@ -272,7 +362,7 @@ function WriteStage() {
           <>
             <Canvas compact />
             <p className="meta">圖卡預覽</p>
-            <Preview platforms={['Threads', 'Instagram']} />
+            <Preview platforms={REAL_PLATFORM_LIST} />
           </>
         ) : (
           <article className="preview-empty">
@@ -293,6 +383,7 @@ function EditStage() {
   const [copyTab, setCopyTab] = useState('Threads')
   const [layoutOpen, setLayoutOpen] = useState(false)
   const length = [...state.content].length
+  const linkedinLength = [...(state.linkedinCaption || '')].length
   const busy = Boolean(state.busy)
 
   return (
@@ -311,7 +402,7 @@ function EditStage() {
               <input value={state.subtitle} onChange={(event) => patch({ subtitle: event.target.value })} />
             </label>
             <div className="tabs" style={{ marginTop: 14 }}>
-              {['Threads', 'Instagram'].map((name) => (
+              {REAL_PLATFORM_LIST.map((name) => (
                 <button key={name} type="button" className={copyTab === name ? 'on' : ''} onClick={() => setCopyTab(name)}>{name}</button>
               ))}
             </div>
@@ -320,12 +411,19 @@ function EditStage() {
                 Threads 文案 <span className={length > THREADS_LIMIT ? 'count bad' : 'count'}>{length} / {THREADS_LIMIT}</span>
                 <textarea value={state.content} onChange={(event) => patch({ content: event.target.value })} style={{ minHeight: 160 }} />
               </label>
-            ) : (
+            ) : null}
+            {copyTab === 'Instagram' ? (
               <label className="field">
                 Instagram 文案
                 <textarea value={state.igCaption} onChange={(event) => patch({ igCaption: event.target.value })} style={{ minHeight: 160 }} />
               </label>
-            )}
+            ) : null}
+            {copyTab === 'LinkedIn' ? (
+              <label className="field">
+                LinkedIn 文案 <span className={linkedinLength > LINKEDIN_LIMIT ? 'count bad' : 'count'}>{linkedinLength} / {LINKEDIN_LIMIT}</span>
+                <textarea value={state.linkedinCaption} onChange={(event) => patch({ linkedinCaption: event.target.value })} style={{ minHeight: 220 }} />
+              </label>
+            ) : null}
             <div className="row" style={{ marginTop: 12 }}>
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('short')}>改短一點</button>
               <button className="btn" type="button" disabled={busy} onClick={() => rewrite('friendly')}>語氣再輕一點</button>
@@ -350,6 +448,10 @@ function EditStage() {
             </button>
             {layoutOpen ? (
               <div className="panel-body">
+                <div style={{ marginBottom: 14 }}>
+                  <span className="field-label">新聞圖片</span>
+                  <ReferencePanel editing />
+                </div>
                 <div className="row" style={{ marginBottom: 12 }}>
                   <button className="btn" type="button" onClick={() => moveLayout(layoutPreset('top'))}>文字在下</button>
                   <button className="btn" type="button" onClick={() => moveLayout(layoutPreset('bottom'))}>文字在上</button>
@@ -393,7 +495,7 @@ function EditStage() {
 
           <article className="surface">
             <h3>發布到哪裡</h3>
-            <p className="sub">Threads、Instagram 正式發布；其餘為示範。</p>
+            <p className="sub">Threads、Instagram、LinkedIn 正式發布；其餘為示範。</p>
             <div className="checks">
               {PLATFORMS.map((name) => (
                 <label className="check" key={name}>
@@ -414,6 +516,7 @@ function EditStage() {
 
         <section className="stack edit-canvas">
           <p className="meta canvas-hint">拖曳文字調整位置</p>
+          {state.imageNote ? <p className="notice">{state.imageNote}</p> : null}
           <Canvas draggable />
           <AdjustChat key={state.activeId} />
           <Preview />
@@ -438,13 +541,18 @@ function ReviewStage() {
           <p className="sub">核准一次即可。要改字請退回。</p>
           <div className="caption tight"><b>{state.title}</b>{state.subtitle ? `\n${state.subtitle}` : ''}</div>
           <div className="tabs" style={{ marginTop: 12 }}>
-            {['Threads', 'Instagram'].map((name) => (
+            {REAL_PLATFORM_LIST.map((name) => (
               <button key={name} type="button" className={tab === name ? 'on' : ''} onClick={() => setTab(name)}>{name}</button>
             ))}
           </div>
-          <div className="caption">{tab === 'Threads' ? state.content : state.igCaption}</div>
+          <div className="caption">{platformCaption(state, tab)}</div>
           <p className="meta" style={{ marginTop: 10 }}>發布到：{item?.destinations?.join('、') || '—'}</p>
           <div className={scan.detected.length ? 'notice bad' : 'notice'} style={{ marginTop: 12 }}>{scan.risks}</div>
+          {cardCredit(state) ? (
+            <div className="notice" style={{ marginTop: 8 }}>
+              圖卡使用了新聞圖片（{cardCredit(state).replace('圖片來源：', '')}）。請確認你有權使用，或退回改用「AI 融合」／AI 底圖。
+            </div>
+          ) : null}
           <label className="check" style={{ marginTop: 12 }}>
             <input type="checkbox" checked={checked.read} onChange={(event) => setChecked((value) => ({ ...value, read: event.target.checked }))} />
             我已讀過全文，確認可以對外發布
@@ -461,7 +569,7 @@ function ReviewStage() {
       </section>
       <section className="stack edit-canvas">
         <Canvas />
-        <Preview platforms={['Threads', 'Instagram']} />
+        <Preview platforms={REAL_PLATFORM_LIST} />
       </section>
     </div>
   )
@@ -535,7 +643,7 @@ function PublishStage() {
       </section>
       <section className="stack edit-canvas">
         <Canvas />
-        <Preview platforms={['Threads', 'Instagram']} />
+        <Preview platforms={REAL_PLATFORM_LIST} />
       </section>
     </div>
   )

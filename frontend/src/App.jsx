@@ -13,7 +13,7 @@ import { ReviewPage } from './pages/Review.jsx'
 import { SettingsPage } from './pages/Settings.jsx'
 import { TemplatesPage } from './pages/Templates.jsx'
 import { WorkspacePage } from './pages/Workspace.jsx'
-import { activeDraft, cardBackground, initialState, pageTitle, stageEnabled, STYLES, templateOf } from './studio.js'
+import { activeDraft, cardBackground, cardCredit, initialState, pageTitle, stageEnabled, STYLES, templateOf } from './studio.js'
 
 const PAGES = {
   workspace: WorkspacePage,
@@ -48,8 +48,13 @@ function editorFields(item, stage) {
     subtitle: item.subtitle || '',
     content: item.content,
     igCaption: item.igCaption,
+    linkedinCaption: item.linkedinCaption,
     canvas: item.post?.canvas_json || null,
     background: item.background,
+    reference: item.reference,
+    imageMode: item.reference ? item.imageMode : undefined,
+    credit: item.credit,
+    imageNote: item.imageNote,
     layout: item.layout,
     style: item.style,
     font: item.font,
@@ -57,6 +62,7 @@ function editorFields(item, stage) {
     themeName: STYLES[item.style]?.[2] || STYLES[0][2],
     tone: item.tone || undefined,
     audience: item.audience || undefined,
+    language: item.language,
     prompt: item.goal || undefined,
     platforms: item.destinations?.length ? item.destinations : undefined,
     versionId: item.post?.versions?.at(-1)?.id ?? null,
@@ -219,6 +225,7 @@ function Studio({ user, onLogout }) {
       const blob = await exportCard({
         style,
         background: cardBackground(current),
+        credit: cardCredit(current),
         company: current.company,
         title: current.title,
         subtitle: current.subtitle,
@@ -233,8 +240,10 @@ function Studio({ user, onLogout }) {
     const reportGeneration = (post) => {
       if (followRef.current.cancelled) {
         notify('已停止生成', post.status === 'editing' ? '保留原本的內容。' : '可以換個方向再試。')
-      } else if (post.status === 'editing') notify('初稿完成', 'AI 已寫好 Threads / IG 文案與圖卡，可以開始編輯。')
-      else notify('生成失敗', post.generation_error || '請再試一次，或換一個方向。')
+      } else if (post.status === 'editing') {
+        const note = post.canvas_json?.image_note
+        notify(note ? '初稿完成（圖片有調整）' : '初稿完成', note || 'AI 已寫好 Threads / IG / LinkedIn 文案與圖卡，可以開始編輯。')
+      } else notify('生成失敗', post.generation_error || '請再試一次，或換一個方向。')
     }
 
     const designOptions = () => {
@@ -243,6 +252,10 @@ function Studio({ user, onLogout }) {
         style: current.style,
         layout: layoutName(current.layout),
         template_id: current.templateId || null,
+        // the news article this post is based on; its picture is used per imageMode (photo / blend / ai)
+        reference: current.reference || null,
+        image_mode: current.reference ? current.imageMode : 'ai',
+        language: current.language || 'zh',
       }
     }
 
@@ -273,7 +286,8 @@ function Studio({ user, onLogout }) {
       startFresh() {
         patch({
           page: 'workspace', stage: 'write', activeId: null, series: [], candidates: [],
-          title: '', subtitle: '', content: '', igCaption: '', canvas: null, background: null,
+          title: '', subtitle: '', content: '', igCaption: '', linkedinCaption: '', canvas: null, background: null,
+          reference: null, credit: null, imageNote: null,
         })
       },
 
@@ -290,7 +304,10 @@ function Studio({ user, onLogout }) {
         abortRef.current = controller
         try {
           const { candidates } = await api.candidates(current.prompt, current.tone, controller.signal)
-          patch({ candidates, series: [], activeId: null, stage: 'write', content: '', igCaption: '', title: '', subtitle: '', background: null })
+          patch({
+            candidates, series: [], activeId: null, stage: 'write', content: '', igCaption: '', linkedinCaption: '',
+            title: '', subtitle: '', background: null, credit: null, imageNote: null,
+          })
           notify('AI 提出了 3 個方向', '挑一個，AI 就會寫文案並產生圖卡。')
         } catch (error) {
           if (isAbort(error)) notify('已停止', '可以修改主題後再產生。')
@@ -402,6 +419,7 @@ function Studio({ user, onLogout }) {
           title: version.title,
           caption_threads: version.caption_threads,
           caption_instagram: version.caption_instagram,
+          caption_linkedin: version.caption_linkedin,
           canvas_json: version.canvas_json,
         })
         const fields = editorFields(view, 'edit')
@@ -410,8 +428,11 @@ function Studio({ user, onLogout }) {
           subtitle: fields.subtitle,
           content: fields.content,
           igCaption: fields.igCaption,
+          linkedinCaption: fields.linkedinCaption,
           canvas: fields.canvas,
           background: fields.background,
+          credit: fields.credit,
+          imageNote: fields.imageNote,
           layout: fields.layout,
           style: fields.style,
           font: fields.font,
@@ -433,6 +454,7 @@ function Studio({ user, onLogout }) {
               subtitle: current.subtitle,
               threads: current.content,
               instagram: current.igCaption,
+              linkedin: current.linkedinCaption,
               style: current.style,
               font: current.font,
               palettes: STYLES.map((item) => item[2]),
@@ -449,7 +471,9 @@ function Studio({ user, onLogout }) {
       // Put AI 微調 changes into the editor; returns the old values so the turn can be undone.
       applyChanges(changes) {
         const current = stateRef.current
-        const fields = { title: 'title', subtitle: 'subtitle', threads: 'content', instagram: 'igCaption', style: 'style', font: 'font' }
+        const fields = {
+          title: 'title', subtitle: 'subtitle', threads: 'content', instagram: 'igCaption', linkedin: 'linkedinCaption', style: 'style', font: 'font',
+        }
         const next = {}
         const before = {}
         for (const [key, field] of Object.entries(fields)) {
@@ -481,7 +505,7 @@ function Studio({ user, onLogout }) {
         if (!editable() || current.busy || !current.activeId) return
         const platforms = realPlatforms()
         if (!platforms.length) {
-          notify('還沒選平台', '到「偏好與安全設定」勾選 Threads 或 Instagram（X、Telegram 只是示範）。')
+          notify('還沒選平台', '勾選 Threads、Instagram 或 LinkedIn（X、Telegram 只是示範）。')
           return
         }
         busy('submitting')
@@ -616,27 +640,54 @@ function Studio({ user, onLogout }) {
         }
       },
 
-      // ---------- discover (still demo data; the backend has no news sources yet)
-      useSource(source) {
+      // ---------- discover: real news search with lead pictures (POST /api/research)
+      async searchNews(query) {
+        const clean = (query ?? stateRef.current.research.query).trim()
+        if (!clean) {
+          notify('先輸入關鍵字', '例如：AI 新創、生成式 AI 商業化。')
+          return
+        }
+        setState((current) => ({ ...current, research: { ...current.research, query: clean, loading: true, error: null } }))
+        try {
+          const { results, backend } = await api.research(clean)
+          setState((current) => ({ ...current, research: { query: clean, results, backend, loading: false, error: null } }))
+          if (!results.length) notify('沒有找到新聞', '換個關鍵字試試。')
+        } catch (error) {
+          setState((current) => ({ ...current, research: { ...current.research, loading: false, error: error.message } }))
+          fail(error, '搜尋失敗')
+        }
+      },
+      // Base the next post on an article. mode: photo (use its picture) / blend (AI 融合) / ai (text only).
+      useSource(source, mode = source.image_url ? 'photo' : 'ai') {
         const current = stateRef.current
+        const facts = [source.summary, source.source && `（${source.source}${source.published ? `，${source.published}` : ''}）`].filter(Boolean).join('')
         patch({
           page: 'workspace',
           stage: 'write',
           activeId: null,
           series: [],
           candidates: [],
-          prompt: `參考「${source.title}」，為${current.audience}撰寫一篇${current.tone}貼文。重點：${source.summary}`,
+          reference: source,
+          imageMode: source.image_url ? mode : 'ai',
+          credit: null,
+          imageNote: null,
+          prompt: `參考「${source.title}」，為${current.audience}撰寫一篇${current.tone}貼文。重點：${facts}`.slice(0, 2000),
         })
-        notify('已帶入參考資料', '主題已更新，按「產生 3 個方向」。')
+        notify('已帶入參考資料', mode === 'ai' || !source.image_url ? '主題已更新，按「產生 3 個方向」。' : '主題與新聞圖片都帶入了，按「產生 3 個方向」。')
       },
-      addSource(url) {
-        const clean = url.trim()
-        if (!clean) return
-        setState((current) => ({
-          ...current,
-          sources: [{ title: clean.replace(/^https?:\/\//, '').slice(0, 42), type: 'RSS / 網站', origin: '使用者新增的示範來源', date: new Date().toLocaleDateString('zh-TW'), summary: '這是新增來源的示意資料，正式版會在這裡抓標題與摘要。' }, ...current.sources],
-        }))
-        notify('已加入來源', '目前以示範摘要呈現，尚未實際抓取網頁。')
+      // Attach an article found from the write stage without touching the topic the user typed.
+      attachReference(source, mode = source.image_url ? 'photo' : 'ai') {
+        if (!editable()) return
+        patch({ reference: source, imageMode: source.image_url ? mode : 'ai' })
+        notify('已加入參考新聞', source.image_url ? '產生時會用這張照片做圖卡，也會引用它的內容。' : '產生時會引用它的內容。')
+      },
+      setImageMode(imageMode) {
+        if (!editable()) return
+        patch({ imageMode })
+      },
+      clearReference() {
+        if (!editable()) return
+        patch({ reference: null, imageMode: 'photo' })
       },
 
       // ---------- design & templates

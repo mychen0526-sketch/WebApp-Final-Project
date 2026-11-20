@@ -44,7 +44,8 @@ function wrap(ctx, text, maxWidth) {
 }
 
 /**
- * @param {object} card { style: [colorA, colorB], background, company, title, subtitle, font, layout }
+ * @param {object} card { style: [colorA, colorB], background, credit, company, title, subtitle, font, layout }
+ *   credit: 「圖片來源：…」 for a news photo; also darkens the text side like the editor does
  * @param {number} boardWidth on-screen width of the artboard, so sizes scale like the preview
  */
 export async function exportCard(card, boardWidth = 520) {
@@ -69,6 +70,29 @@ export async function exportCard(card, boardWidth = 520) {
   }
 
   const blockWidth = Math.min(SIZE * 0.72, 380 * scale)
+  const textBelow = card.layout.text.y > 50
+
+  // news photo: dark gradient on the text side + credit line on the other side
+  if (card.background && card.credit) {
+    const shade = textBelow
+      ? ctx.createLinearGradient(0, SIZE, 0, SIZE * 0.35)
+      : ctx.createLinearGradient(0, 0, 0, SIZE * 0.65)
+    shade.addColorStop(0, 'rgba(0,0,0,0.62)')
+    shade.addColorStop(1, 'rgba(0,0,0,0)')
+    ctx.fillStyle = shade
+    ctx.fillRect(0, 0, SIZE, SIZE)
+    const creditSize = 10 * scale
+    ctx.font = `400 ${creditSize}px ${FONT}`
+    ctx.fillStyle = 'rgba(255,255,255,0.85)'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = textBelow ? 'top' : 'bottom'
+    ctx.shadowColor = 'rgba(0,0,0,0.5)'
+    ctx.shadowBlur = 4 * scale
+    ctx.fillText(card.credit, SIZE - 18 * scale, textBelow ? 16 * scale : SIZE - 16 * scale)
+    ctx.shadowColor = 'transparent'
+    ctx.shadowBlur = 0
+    ctx.textAlign = 'left'
+  }
 
   // decorative shape (only when there is no picture behind)
   if (!card.background) {

@@ -16,8 +16,13 @@ def scan(text: str, words: list[str]) -> dict:
 
 
 def post_text(post: dict) -> str:
-    """All user-visible text of a post: title, both captions, and canvas text elements."""
-    parts = [post.get("title") or "", post.get("caption_threads") or "", post.get("caption_instagram") or ""]
+    """All user-visible text of a post: title, every caption, and canvas text elements."""
+    parts = [
+        post.get("title") or "",
+        post.get("caption_threads") or "",
+        post.get("caption_instagram") or "",
+        post.get("caption_linkedin") or "",
+    ]
     canvas = post.get("canvas_json") or {}
     for element in canvas.get("texts") or []:
         if isinstance(element, dict):

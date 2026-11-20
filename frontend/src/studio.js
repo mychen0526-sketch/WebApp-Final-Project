@@ -15,11 +15,18 @@ export const MENU_MORE = ['discover', 'templates', 'settings']
 
 export const TONES = ['專業分析', '輕鬆分享', '討論互動']
 export const AUDIENCES = ['創業者與科技從業者', '一般大眾', '潛在企業客戶', '學術研究者']
-export const PLATFORMS = ['Threads', 'X', 'Instagram', 'Telegram']
+/** Language of the generated copy and card text (backend `language`). */
+export const LANGUAGES = [
+  ['zh', '中文', '繁體中文文案'],
+  ['en', 'English', '英文文案與圖卡'],
+  ['both', '中英雙語', '中文在前、英文在後；圖卡主標中文、說明英文'],
+]
+export const PLATFORMS = ['Threads', 'Instagram', 'LinkedIn', 'X', 'Telegram']
 export const PLATFORM_HINT = {
   Threads: '話題討論 · 由後端正式發布',
   X: '短文貼文 · 示範平台，尚未串接',
   Instagram: '正方形圖文 · 由後端正式發布',
+  LinkedIn: '專業觀點長文 · 由後端正式發布到個人動態',
   Telegram: '頻道圖文 · 示範平台，尚未串接',
 }
 
@@ -54,9 +61,11 @@ export function initialState() {
     prompt: '整理近期 AI 產品商業化趨勢，撰寫一篇給創業者看的科技觀察貼文。',
     tone: '專業分析',
     audience: '創業者與科技從業者',
+    language: 'zh',
     // editor fields for the post that is open (activeId = backend post id)
     content: '',
     igCaption: '',
+    linkedinCaption: '',
     title: '',
     subtitle: '',
     canvas: null,
@@ -73,12 +82,12 @@ export function initialState() {
     platform: 'Threads',
     platforms: ['Threads'],
     drafts: [],
-    sources: [
-      { title: '生成式 AI 加速企業產品開發流程', type: '產業觀察', origin: '示範資料 · Tech Insights', date: '2026/10/16', summary: '整理企業如何使用生成式 AI 進行開發、設計與業務流程。' },
-      { title: 'AI Agent 在新創公司的應用機會', type: '科技新聞', origin: '示範資料 · AI Daily', date: '2026/10/15', summary: '探討 Agent 技術如何協助中小型團隊擴大交付能力。' },
-      { title: 'Human-AI Collaboration in Product Design', type: '學術研究', origin: '示範資料 · Research Digest', date: '2026/10/14', summary: '人機協作在產品設計工作流程中的效率及品質討論。' },
-      { title: '2026 科技新創產業趨勢觀察', type: '市場趨勢', origin: '示範資料 · Market Lab', date: '2026/10/12', summary: '市場轉向速度、AI 商業化與小型創業團隊策略。' },
-    ],
+    // 趨勢情報: news found by POST /api/research, and the article this post is based on
+    research: { query: '', results: [], backend: null, loading: false, error: null },
+    reference: null, // {title, url, source, published, summary, image_url}
+    imageMode: 'photo', // how reference.image_url is used: photo | blend | ai (no picture)
+    credit: null, // 「圖片來源：…」 drawn on the card when a news picture is the background
+    imageNote: null, // why the news picture could not be used, from the last generation
     sensitive: ['未公開產品', '內部代號', '機密客戶'],
     feedback: [],
     company: 'ORBIT / LAB',
@@ -91,9 +100,10 @@ export function initialState() {
   }
 }
 
-// Threads and Instagram show the captions the backend wrote; X and Telegram are demo previews.
+// Threads, Instagram and LinkedIn show the captions the backend wrote; X and Telegram are demo previews.
 export function platformCaption(state, platform) {
   if (platform === 'Instagram') return state.igCaption || state.content
+  if (platform === 'LinkedIn') return state.linkedinCaption || state.igCaption || state.content
   let text = state.content
   if (platform === 'X' && text.length > 240) text = `${text.slice(0, 237)}…`
   return text
@@ -107,7 +117,8 @@ export function scanText(sensitive, title, content) {
 }
 
 export function safetyScan(state) {
-  return scanText(state.sensitive, `${state.title}\n${state.subtitle || ''}`, `${state.content}\n${state.igCaption || ''}`)
+  const captions = [state.content, state.igCaption, state.linkedinCaption].filter(Boolean).join('\n')
+  return scanText(state.sensitive, `${state.title}\n${state.subtitle || ''}`, captions)
 }
 
 export function activeDraft(state) {
@@ -133,9 +144,14 @@ export function templateUrl(state, id = state.templateId) {
   return templateOf(state, id)?.url || state.removedTemplates?.[id] || null
 }
 
-// What sits behind the text on the card: a chosen template, else the AI picture, else the gradient.
+// What sits behind the text on the card: a chosen template, else the AI picture / news photo, else the gradient.
 export function cardBackground(state) {
   return templateUrl(state) || state.background || null
+}
+
+// Credit line on the card: only when the picture behind the text is a news photo (not a template).
+export function cardCredit(state) {
+  return !state.templateId && state.background ? state.credit : null
 }
 
 export function pageTitle(page) {

@@ -19,7 +19,7 @@ from typing import Protocol
 import httpx
 from pydantic import TypeAdapter, ValidationError
 
-from ..schemas import AdjustIn, Adjustment, Candidate, Captions, TextElement
+from ..schemas import AdjustIn, Adjustment, Candidate, Captions, Reference, TextElement
 from . import design
 
 log = logging.getLogger(__name__)
@@ -30,6 +30,53 @@ REWRITE_HINTS = {
     "friendly": "語氣更親切口語，像在跟朋友聊天。",
     "new": "換一種完全不同的寫法與結構，不要沿用上一版的句子。",
 }
+
+
+# Per-language rules filled into prompts B (copy), D (card text) and E (微調).
+# Threads allows 500 characters and counts emoji by bytes, so every version keeps a buffer.
+LANGUAGE_RULES: dict[str, dict[str, str]] = {
+    "zh": {
+        "copy": "繁體中文，台灣用語",
+        "threads": "380 字以內，不加 hashtag",
+        "instagram": "150～300 字，文末加 3～5 個相關 hashtag",
+        "linkedin": "全文 400～900 字，文末加 3 個專業 hashtag（例如 #AI #產業趨勢）",
+        "card": "全部用繁體中文",
+        "headline": "6～14 個字，例如「OpenAI 新公告」",
+        "highlight": "6～12 個字，例如「新創的三個機會」",
+        "description": "12～24 個字",
+        "adjust": "繁體中文，台灣用語",
+        "threads_limit": "380 字",
+    },
+    "en": {
+        "copy": "全部用英文撰寫（自然、道地的英文，不是逐字翻譯）；即使發文目標、方向或參考資料是中文，輸出也只能是英文",
+        "threads": "450 個字元（characters）以內，不加 hashtag",
+        "instagram": "80～180 個英文單字，文末加 3～5 個英文 hashtag",
+        "linkedin": "全文 200～450 個英文單字，文末加 3 個英文專業 hashtag（例如 #AI #TechTrends）",
+        "card": "全部用英文；公司或產品名稱保留原文",
+        "headline": "2～5 個英文單字、28 個字元以內，例如「OpenAI's New Move」",
+        "highlight": "2～5 個英文單字、26 個字元以內，例如「3 Chances for Startups」",
+        "description": "5～10 個英文單字、55 個字元以內",
+        "adjust": "文案維持英文（使用者用中文下指令也一樣）",
+        "threads_limit": "450 個字元",
+    },
+    "both": {
+        "copy": "中英雙語：每個平台版本都先寫繁體中文（台灣用語），空一行後寫意思相同的英文版本"
+        "（自然的英文，不是逐字翻譯）；hashtag 只放在全文最後",
+        "threads": "中文 150 字以內＋英文 220 個字元以內，總長不超過 450 個字元，不加 hashtag",
+        "instagram": "中文 100～180 字＋英文 60～120 個單字，全文最後加 4～6 個中英混合 hashtag",
+        "linkedin": "中文 300～600 字＋英文 150～300 個單字，全文最後加 3～4 個專業 hashtag",
+        "card": "headline 與 highlight 用繁體中文，description 用英文",
+        "headline": "繁體中文 6～14 個字，例如「OpenAI 新公告」",
+        "highlight": "繁體中文 6～12 個字，例如「新創的三個機會」",
+        "description": "英文 5～10 個單字、55 個字元以內（是主標題的英文說明）",
+        "adjust": "維持中英雙語：中文在前、英文在後，兩邊意思一致；改動一邊時另一邊也要同步改",
+        "threads_limit": "450 個字元",
+    },
+}
+
+
+def language_rules(language: str | None) -> dict[str, str]:
+    return LANGUAGE_RULES.get(language or "zh", LANGUAGE_RULES["zh"])
 
 
 class AIError(RuntimeError):
@@ -62,12 +109,19 @@ class AIService(Protocol):
         candidate: Candidate,
         mode: str | None = None,
         on_text: OnText | None = None,
+        reference: Reference | None = None,
+        language: str = "zh",
     ) -> Captions: ...
-    def adjust(self, body: AdjustIn) -> Adjustment: ...
-    def card_texts(self, candidate: Candidate, layout: design.Layout, scheme: design.ColorScheme) -> list[TextElement]: ...
+    def adjust(self, body: AdjustIn, language: str = "zh") -> Adjustment: ...
+    def card_texts(
+        self, candidate: Candidate, layout: design.Layout, scheme: design.ColorScheme, language: str = "zh"
+    ) -> list[TextElement]: ...
     def image(
         self, candidate: Candidate, visual_style: str, layout: design.Layout, scheme: design.ColorScheme
     ) -> bytes: ...
+    def blend(
+        self, candidate: Candidate, visual_style: str, layout: design.Layout, scheme: design.ColorScheme, photo: bytes
+    ) -> bytes | None: ...
 
 
 # ---------------------------------------------------------------- prompt builders
@@ -75,7 +129,20 @@ def prompt_candidates(goal: str, tone: str | None) -> str:
     return render("a_candidates.txt", {"goal": goal, "tone": tone or "未指定"})
 
 
-def prompt_captions(goal, tone, audience, candidate, mode) -> str:
+def reference_text(reference: Reference | None) -> str:
+    if not reference:
+        return "（無，只用發文目標裡的資訊）"
+    lines = [f"標題：{reference.title}", f"出處：{reference.source or '未知媒體'}"]
+    if reference.published:
+        lines.append(f"日期：{reference.published}")
+    if reference.summary:
+        lines.append(f"摘要：{reference.summary}")
+    lines.append(f"網址：{reference.url}")
+    return "\n".join(lines)
+
+
+def prompt_captions(goal, tone, audience, candidate, mode, reference: Reference | None = None, language="zh") -> str:
+    rules = language_rules(language)
     return render(
         "b_copy.txt",
         {
@@ -83,12 +150,18 @@ def prompt_captions(goal, tone, audience, candidate, mode) -> str:
             "tone": tone or "未指定",
             "audience": audience or "創業者與科技從業者",
             "extra": REWRITE_HINTS.get(mode or "", "無"),
+            "reference": reference_text(reference),
+            "language_rule": rules["copy"],
+            "threads_rule": rules["threads"],
+            "instagram_rule": rules["instagram"],
+            "linkedin_rule": rules["linkedin"],
             **candidate_vars(candidate),
         },
     )
 
 
-def prompt_adjust(body: AdjustIn) -> str:
+def prompt_adjust(body: AdjustIn, language: str = "zh") -> str:
+    rules = language_rules(language)
     current = body.current
     palettes = "、".join(f"{i} 號 {name}" for i, name in enumerate(current.palettes)) or "0～3 號"
     history = "\n".join(f"{'使用者' if t.role == 'user' else '助理'}：{t.text}" for t in body.history[-8:]) or "（無）"
@@ -99,17 +172,32 @@ def prompt_adjust(body: AdjustIn) -> str:
             "subtitle": current.subtitle or "（空白）",
             "threads": current.threads or "（空白）",
             "instagram": current.instagram or "（空白）",
+            "linkedin": current.linkedin or "（空白）",
             "style": str(current.style),
             "palettes": palettes,
             "font": str(current.font),
             "history": history,
             "instruction": body.instruction,
+            "language_rule": rules["adjust"],
+            "threads_limit": rules["threads_limit"],
         },
     )
 
 
-def prompt_card_texts(candidate, layout, scheme) -> str:
-    return render("d_layout.txt", {**candidate_vars(candidate), **design.layout_vars(layout), **design.scheme_vars(scheme)})
+def prompt_card_texts(candidate, layout, scheme, language="zh") -> str:
+    rules = language_rules(language)
+    return render(
+        "d_layout.txt",
+        {
+            **candidate_vars(candidate),
+            **design.layout_vars(layout),
+            **design.scheme_vars(scheme),
+            "language_rule": rules["card"],
+            "headline_rule": rules["headline"],
+            "highlight_rule": rules["highlight"],
+            "description_rule": rules["description"],
+        },
+    )
 
 
 def enforce_layout(texts: list[TextElement], layout: design.Layout, scheme: design.ColorScheme) -> list[TextElement]:
@@ -241,14 +329,15 @@ class RapAI:
             raise AIError("LLM 回傳的候選少於 3 個")
         return result[:3]
 
-    def captions(self, goal, tone, audience, candidate, mode=None, on_text=None):
-        return self._json(prompt_captions(goal, tone, audience, candidate, mode), TypeAdapter(Captions), on_text=on_text)
+    def captions(self, goal, tone, audience, candidate, mode=None, on_text=None, reference=None, language="zh"):
+        prompt = prompt_captions(goal, tone, audience, candidate, mode, reference, language)
+        return self._json(prompt, TypeAdapter(Captions), on_text=on_text)
 
-    def adjust(self, body):
-        return self._json(prompt_adjust(body), TypeAdapter(Adjustment))
+    def adjust(self, body, language="zh"):
+        return self._json(prompt_adjust(body, language), TypeAdapter(Adjustment))
 
-    def card_texts(self, candidate, layout, scheme):
-        texts = self._json(prompt_card_texts(candidate, layout, scheme), TypeAdapter(list[TextElement]))
+    def card_texts(self, candidate, layout, scheme, language="zh"):
+        texts = self._json(prompt_card_texts(candidate, layout, scheme, language), TypeAdapter(list[TextElement]))
         return enforce_layout(texts, layout, scheme)
 
     def scene(self, candidate: Candidate, visual_style: str) -> str | None:
@@ -285,8 +374,46 @@ class MockAI:
             Candidate(title="觀點與預測", angle=f"從「{topic}」推演接下來半年的產業走向", hook="我的預測可能不太一樣"),
         ]
 
-    def captions(self, goal, tone, audience, candidate, mode=None, on_text=None):
+    def captions(self, goal, tone, audience, candidate, mode=None, on_text=None, reference=None, language="zh"):
         self._maybe_fail()
+        zh = self._zh_captions(candidate, mode, reference)
+        if language == "en":
+            threads, instagram, linkedin = self._en_captions(candidate, reference)
+        elif language == "both":  # Chinese first, then English; hashtags only at the very end
+            en = self._en_captions(candidate, reference)
+            threads = f"{zh[0]}\n\n{en[0]}"
+            instagram = f"{zh[0]}\n\n{en[0]}\n\n#AI #科技趨勢 #TechTrends #Startups"
+            linkedin = f"{zh[2].rsplit(chr(10) * 2, 1)[0]}\n\n{en[2]}"
+        else:
+            threads, instagram, linkedin = zh
+        if on_text is not None:  # pretend to stream, a few characters at a time
+            raw = json.dumps({"threads": threads, "instagram": instagram, "linkedin": linkedin}, ensure_ascii=False)
+            for end in range(4, len(raw) + 4, 4):
+                on_text(raw[:end])
+                if self.stream_delay:
+                    time.sleep(self.stream_delay)
+        return Captions(threads=threads, instagram=instagram, linkedin=linkedin)
+
+    @staticmethod
+    def _en_captions(candidate, reference) -> tuple[str, str, str]:
+        threads = "\n".join(
+            [f"Quick take: {candidate.title}", "", "Here is why it matters for teams building with AI.", "", "What do you think? 👇"]
+        )
+        instagram = threads + "\n\n#AI #TechTrends #Startups"
+        cited = f'According to {reference.source or "the report"} ("{reference.title}"), ' if reference else ""
+        linkedin = "\n\n".join(
+            [
+                f"Quick take: {candidate.title}",
+                f"{cited}this is worth a closer look.",
+                "Why it matters:\n• Product cycles are getting faster\n• The bar for commercialization is moving",
+                "How is your team thinking about it?",
+                "#AI #TechTrends #Startups",
+            ]
+        )
+        return threads, instagram, linkedin
+
+    @staticmethod
+    def _zh_captions(candidate, mode, reference) -> tuple[str, str, str]:
         lines = [candidate.hook, "", candidate.angle + "。", "", "你怎麼看？留言聊聊 👇"]
         if mode == "short":
             lines = [candidate.hook, "", candidate.angle + "。"]
@@ -296,15 +423,19 @@ class MockAI:
             lines = [candidate.angle + "？", "", candidate.hook, "", "想聽聽你的看法 💬"]
         threads = "\n".join(lines)
         instagram = threads + "\n\n#AI #科技趨勢 #新創 #產品開發"
-        if on_text is not None:  # pretend to stream, a few characters at a time
-            raw = json.dumps({"threads": threads, "instagram": instagram}, ensure_ascii=False)
-            for end in range(4, len(raw) + 4, 4):
-                on_text(raw[:end])
-                if self.stream_delay:
-                    time.sleep(self.stream_delay)
-        return Captions(threads=threads, instagram=instagram)
+        cited = f"根據{reference.source or '報導'}「{reference.title}」，" if reference else ""
+        linkedin = "\n\n".join(
+            [
+                candidate.hook,
+                f"{cited}{candidate.angle}。",
+                "為什麼重要：\n• 產品節奏正在變快\n• 商業化的門檻也跟著改變",
+                "你的團隊怎麼看？歡迎在留言分享。",
+                "#AI #產業趨勢 #新創",
+            ]
+        )
+        return threads, instagram, linkedin
 
-    def adjust(self, body):
+    def adjust(self, body, language="zh"):
         """Keyword rules standing in for the model, so 微調 works without an API key."""
         self._maybe_fail()
         current, text = body.current, body.instruction
@@ -314,6 +445,9 @@ class MockAI:
             title = current.title.rstrip("。.!！")
             out["title"] = title if title.endswith(("？", "?")) else f"{title}？"
             done.append("標題改成問句")
+        if "linkedin" in text.lower() and "正式" in text:
+            out["linkedin"] = current.linkedin.replace("！", "。")
+            done.append("LinkedIn 語氣改正式")
         if "短" in text:
             paragraphs = current.threads.split("\n\n")
             out["threads"] = (
@@ -330,17 +464,22 @@ class MockAI:
             out["font"] = max(24, current.font - 4)
             done.append("標題字縮小")
         if not done:
-            return Adjustment(reply="示範模式只認得：標題改問句、改短、換顏色、字放大／縮小。")
+            return Adjustment(reply="示範模式只認得：標題改問句、改短、LinkedIn 改正式、換顏色、字放大／縮小。")
         return Adjustment(reply="已" + "、".join(done) + "。", **out)
 
-    def card_texts(self, candidate, layout, scheme):
+    def card_texts(self, candidate, layout, scheme, language="zh"):
         self._maybe_fail()
+        headline, highlight, description = candidate.title[:14], candidate.hook[:12], candidate.angle[:24]
+        if language == "en":
+            headline, highlight = "Quick Take", "Why It Matters"
+        if language in ("en", "both"):
+            description = "What it means for AI startups"
         raw = [
-            TextElement(textType="headline", text=candidate.title[:14], position={"x": 0, "y": 0}, fontSize=80,
+            TextElement(textType="headline", text=headline, position={"x": 0, "y": 0}, fontSize=80,
                         fontFamily="Noto Sans TC", fontWeight="900", color="#fff", alignment="center"),
-            TextElement(textType="highlight", text=candidate.hook[:12], position={"x": 0, "y": 0}, fontSize=48,
+            TextElement(textType="highlight", text=highlight, position={"x": 0, "y": 0}, fontSize=48,
                         fontFamily="Noto Sans TC", fontWeight="700", color="#fff", alignment="center"),
-            TextElement(textType="description", text=candidate.angle[:24], position={"x": 0, "y": 0}, fontSize=30,
+            TextElement(textType="description", text=description, position={"x": 0, "y": 0}, fontSize=30,
                         fontFamily="Noto Sans TC", fontWeight="500", color="#fff", alignment="center"),
         ]
         return enforce_layout(raw, layout, scheme)
@@ -351,6 +490,9 @@ class MockAI:
     def image(self, candidate, visual_style, layout, scheme):
         self._maybe_fail()
         return gradient_png(scheme.primary, scheme.accent, size=design.CANVAS_SIZE)
+
+    def blend(self, candidate, visual_style, layout, scheme, photo):
+        return None  # no image model offline: the real photo is used as it is
 
 
 def _hex(color: str) -> tuple[int, int, int]:

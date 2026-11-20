@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import Settings, get_settings
 from .container import Services, build_services
 from .errors import NotFound, install_handlers
-from .routers import accounts, candidates, posts, settings, templates
+from .routers import accounts, candidates, posts, research, settings, templates
 from .services.scheduler import scheduler_loop
 from .services.storage import MemoryStorage
 
@@ -33,7 +33,7 @@ def create_app(services: Services | None = None, app_settings: Settings | None =
     app = FastAPI(
         title="跨平台 AI 社群圖文生成與發布平台 API",
         version="0.1.0",
-        description="輸入目標 → AI 生成 → 編輯 → 本人審核 → 發布到 Threads / Instagram",
+        description="輸入目標 → AI 生成 → 編輯 → 本人審核 → 發布到 Threads / Instagram / LinkedIn",
         lifespan=lifespan,
     )
     app.state.services = services
@@ -45,7 +45,7 @@ def create_app(services: Services | None = None, app_settings: Settings | None =
         allow_headers=["*"],
     )
     install_handlers(app)
-    for module in (accounts, candidates, posts, settings, templates):
+    for module in (accounts, candidates, posts, research, settings, templates):
         app.include_router(module.router)
 
     @app.get("/health", tags=["meta"])
@@ -56,6 +56,7 @@ def create_app(services: Services | None = None, app_settings: Settings | None =
             "ai": "mock" if cfg.ai_is_mock else "rap",
             "image": cfg.image_backend,
             "publish": "mock" if cfg.mock_publish else "live",
+            "search": services.research.name if services.research else "off",
         }
 
     if isinstance(services.storage, MemoryStorage):

@@ -188,6 +188,25 @@ textarea, input[type="text"], input[type="email"], input[type="password"], input
 textarea { min-height: 92px; resize: vertical; line-height: 1.65; }
 textarea:focus, input:focus, select:focus { border-color: var(--ink); background: #fff; }
 
+/* BUG-06: custom caret so native ⌄ does not sit off-center next to tone pills. */
+select.select-chip,
+.write-options select {
+  width: auto;
+  min-width: 9.5rem;
+  max-width: min(100%, 16rem);
+  height: 34px;
+  padding: 0 28px 0 11px;
+  line-height: 32px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: #fff;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%236f6b64' d='M1 1l5 5 5-5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 8px;
+}
+.write-options { align-items: center; }
+
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .tone {
   border: 1px solid var(--line);
@@ -274,10 +293,13 @@ textarea:focus, input:focus, select:focus { border-color: var(--ink); background
 .float-block.is-locked:active { cursor: default; }
 .steps {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
   margin: -4px 0 22px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 0;
+  min-height: 44px;
 }
 .steps button {
   border: 0;
@@ -486,8 +508,39 @@ textarea:focus, input:focus, select:focus { border-color: var(--ink); background
   padding: 12px 14px;
   max-width: 320px;
   z-index: 30;
+  display: grid;
+  gap: 6px;
 }
-.toast b { display: block; font-weight: 600; margin-bottom: 2px; }
+.toast b { display: block; font-weight: 600; margin-bottom: 0; }
+.toast-text { font-size: 12.5px; line-height: 1.45; opacity: 0.92; }
+.toast.sticky { border-left: 3px solid #e2b4b4; }
+.toast-ok {
+  justify-self: end;
+  margin-top: 4px;
+  border: 1px solid rgba(250, 249, 246, 0.35);
+  background: transparent;
+  color: #faf9f6;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 12.5px;
+}
+.toast-ok:hover { background: rgba(250, 249, 246, 0.1); }
+
+.publish-split { display: grid; gap: 14px; margin-top: 16px; }
+.publish-block {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: #fff;
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.publish-block.muted { background: transparent; }
+.publish-block h4 { margin: 0; font-size: 15px; font-weight: 600; }
+.publish-block .field { width: 100%; }
+.publish-block .btn { margin-top: 2px; }
 
 input[type="range"] { width: 140px; accent-color: var(--ink); }
 
@@ -501,6 +554,7 @@ input[type="range"] { width: 140px; accent-color: var(--ink); }
 }
 .link { border: 0; background: none; padding: 0; color: var(--ink); cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
 .art-sub { margin-top: 10px; font-size: max(14px, calc(var(--size) * 0.5)); opacity: 0.9; line-height: 1.4; white-space: pre-wrap; }
+.art-desc { margin-top: 8px; font-size: max(12px, calc(var(--size) * 0.38)); opacity: 0.82; line-height: 1.35; white-space: pre-wrap; font-weight: 400; }
 .candidates { display: grid; gap: 10px; margin-top: 14px; }
 .candidate {
   text-align: left;
@@ -544,9 +598,23 @@ input[type="range"] { width: 140px; accent-color: var(--ink); }
 }
 .grid-edit {
   display: grid;
-  grid-template-columns: 0.9fr 1.1fr;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   gap: 36px;
   align-items: start;
+}
+/* BUG-05: keep the card column from reflowing when version nav / chat height changes. */
+.edit-canvas {
+  min-width: 0;
+  position: sticky;
+  top: 24px;
+  align-self: start;
+}
+.edit-canvas .artboard {
+  width: 100%;
+  max-width: 100%;
+}
+.edit-tools {
+  min-width: 0;
 }
 .write-focus { max-width: 640px; }
 .write-head h3 { font-size: 22px; font-weight: 600; letter-spacing: -0.03em; }
@@ -618,7 +686,7 @@ input[type="range"] { width: 140px; accent-color: var(--ink); }
 @keyframes blink { to { visibility: hidden; } }
 
 /* ‹ 2 / 3 › AI versions */
-.version-nav { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.version-nav { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
 .version-nav button {
   width: 26px;
   height: 26px;
@@ -637,7 +705,7 @@ input[type="range"] { width: 140px; accent-color: var(--ink); }
 .chat-head h3 { font-size: 15px; }
 .chat-head .meta { margin-top: 0; }
 .chat-list { display: grid; gap: 8px; max-height: 300px; overflow-y: auto; margin: 10px 0; align-content: start; }
-.chat-suggest { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-suggest { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
 .bubble { max-width: 88%; padding: 9px 12px; border-radius: 10px; font-size: 13px; }
 .bubble p { white-space: pre-wrap; }
 .bubble.user { justify-self: end; background: var(--ink); color: #faf9f6; }

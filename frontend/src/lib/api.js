@@ -12,13 +12,56 @@ export class ApiError extends Error {
   }
 }
 
+const FIELD_LABEL = {
+  goal: '主題',
+  title: '標題',
+  subtitle: '副標',
+  tone: '語氣',
+  audience: '受眾',
+  instruction: '說明',
+  caption_threads: 'Threads 文案',
+  caption_instagram: 'Instagram 文案',
+  caption_linkedin: 'LinkedIn 文案',
+  canvas_json: '圖卡資料',
+  platforms: '發布平台',
+  query: '搜尋關鍵字',
+  file: '檔案',
+  name: '名稱',
+  brand_name: '品牌名稱',
+  default_tone: '預設語氣',
+  default_audience: '主要受眾',
+  default_platforms: '預設平台',
+  sensitive_words: '敏感詞',
+  when: '排程時間',
+}
+
+function fieldLabel(loc = []) {
+  const key = [...loc].reverse().find((part) => typeof part === 'string' && FIELD_LABEL[part]) || loc[loc.length - 1]
+  return FIELD_LABEL[key] || (typeof key === 'string' ? key : '欄位')
+}
+
+// BUG-19: turn FastAPI / Pydantic English validation text into short Chinese.
+function translateValidation(msg = '') {
+  const text = String(msg)
+  const atMost = text.match(/at most (\d+) characters/i)
+  if (atMost) return `最多 ${atMost[1]} 字`
+  const atLeast = text.match(/at least (\d+) characters/i)
+  if (atLeast) return `至少 ${atLeast[1]} 字`
+  if (/field required/i.test(text)) return '必填'
+  if (/input should be/i.test(text)) return '格式不正確'
+  if (/value is not a valid/i.test(text)) return '格式不正確'
+  if (/string should match/i.test(text)) return '格式不正確'
+  return text
+}
+
 function messageOf(data, status) {
   if (data?.message) return data.message
   // FastAPI request validation errors: {detail: [{loc, msg}]}
   if (Array.isArray(data?.detail)) {
-    return data.detail.map((item) => `${(item.loc || []).slice(1).join('.')}：${item.msg}`).join('；')
+    return data.detail.map((item) => `${fieldLabel(item.loc)}：${translateValidation(item.msg)}`).join('；')
   }
-  if (typeof data?.detail === 'string') return data.detail
+  if (typeof data?.detail === 'string') return translateValidation(data.detail)
+  if (typeof data?.detail?.message === 'string') return data.detail.message
   return `後端回應錯誤（${status}）`
 }
 
@@ -119,11 +162,12 @@ export const api = {
     return request(`/api/posts/${id}/images`, { method: 'POST', form })
   },
   feedback: (id, rating) => json('POST')(`/api/posts/${id}/feedback`, { rating }),
+  listFeedback: () => request('/api/feedback'),
   submit: (id, platforms) => json('POST')(`/api/posts/${id}/submit`, { platforms }),
   reject: (id) => json('POST')(`/api/posts/${id}/reject`),
   approve: (id) => json('POST')(`/api/posts/${id}/approve`, { readConfirmed: true, rightsConfirmed: true }),
   publish: (id) => json('POST')(`/api/posts/${id}/publish`),
-  retry: (id) => json('POST')(`/api/posts/${id}/retry`),
+  retry: (id, body) => json('POST')(`/api/posts/${id}/retry`, body || {}),
   schedule: (id, when) => json('POST')(`/api/posts/${id}/schedule`, { when }),
   cancelSchedule: (id) => json('POST')(`/api/posts/${id}/cancel-schedule`),
   reopen: (id) => json('POST')(`/api/posts/${id}/reopen`),

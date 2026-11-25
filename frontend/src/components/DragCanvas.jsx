@@ -42,7 +42,7 @@ function DragBlock({ pos, label, onMove, draggable, children }) {
 }
 
 // A news photo gets a dark gradient on the text side (so white text stays readable) and a credit line.
-export function DragCanvas({ style, company, title, subtitle = '', font, layout, onLayout, compact = false, background = null, credit = null }) {
+export function DragCanvas({ style, company, title, subtitle = '', description = '', font, layout, onLayout, compact = false, background = null, credit = null }) {
   const draggable = Boolean(onLayout)
   const vars = { '--a': style[0], '--b': style[1], '--size': `${font}px` }
   if (background) vars.backgroundImage = `url("${background}")`
@@ -60,6 +60,7 @@ export function DragCanvas({ style, company, title, subtitle = '', font, layout,
         <p className="art-kicker">{company}</p>
         <p className="art-display">{title}</p>
         {subtitle ? <p className="art-sub">{subtitle}</p> : null}
+        {description ? <p className="art-desc">{description}</p> : null}
       </DragBlock>
       <footer>
         <span>{draggable ? (background ? '拖曳文字到圖片空白處' : '拖曳圖形或文字') : '預覽'}</span>

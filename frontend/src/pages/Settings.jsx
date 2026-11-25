@@ -91,7 +91,7 @@ export function SettingsPage() {
           <div className="checks">
             {PLATFORMS.map((name) => (
               <label className="check" key={name}>
-                <input type="checkbox" checked={state.platforms.includes(name)} onChange={() => togglePlatform(name)} />
+                <input type="checkbox" checked={state.platforms.includes(name)} onChange={() => togglePlatform(name, { asDefault: true })} />
                 {name}{isRealPlatform(name) ? '' : '（示範）'}
               </label>
             ))}

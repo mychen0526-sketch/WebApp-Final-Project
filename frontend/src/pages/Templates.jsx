@@ -3,8 +3,7 @@ import { useStudio } from '../context.js'
 import { STYLES, TONES } from '../studio.js'
 
 export function TemplatesPage() {
-  const { state, patch, applyTemplate, addTemplate, removeTemplate, pickTemplate, saveProfile } = useStudio()
-  const [tone, setTone] = useState(state.tone)
+  const { state, patch, applyTemplate, addTemplate, removeTemplate, pickTemplate, saveBrand, saveDefaultTone } = useStudio()
   const [name, setName] = useState('')
   const fileRef = useRef(null)
 
@@ -19,16 +18,16 @@ export function TemplatesPage() {
     <div className="stack">
       <article className="card">
         <h3>品牌設定</h3>
-        <p className="sub">名稱會出現在圖卡角落，預設語氣會跟著版型一起套用。</p>
+        <p className="sub">名稱會出現在圖卡角落；預設語氣會存到後端，下次登入沿用。</p>
         <div className="row">
           <label className="field" style={{ flex: 1 }}>
             品牌名稱
-            <input value={state.company} onChange={(event) => patch({ company: event.target.value })} onBlur={saveProfile} />
+            <input value={state.company} onChange={(event) => patch({ company: event.target.value })} onBlur={saveBrand} />
           </label>
           <label className="field" style={{ width: 220 }}>
             預設語氣
-            <select value={tone} onChange={(event) => setTone(event.target.value)}>
-              {TONES.map((item) => <option key={item}>{item}</option>)}
+            <select value={state.tone} onChange={(event) => saveDefaultTone(event.target.value)}>
+              {[...new Set([state.tone, ...TONES])].map((item) => <option key={item}>{item}</option>)}
             </select>
           </label>
         </div>
@@ -71,7 +70,7 @@ export function TemplatesPage() {
             <div style={{ height: 120, borderRadius: 10, background: `linear-gradient(145deg, ${item[0]}, ${item[1]})` }} />
             <h3 style={{ marginTop: 12 }}>{item[2]}</h3>
             <p className="sub">套用為圖卡底色</p>
-            <button className="btn soft" onClick={() => applyTemplate(index, tone)}>套用到工作台</button>
+            <button className="btn soft" onClick={() => applyTemplate(index, state.tone)}>套用到工作台</button>
           </article>
         ))}
       </div>

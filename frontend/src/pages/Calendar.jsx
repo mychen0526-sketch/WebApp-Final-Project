@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStudio } from '../context.js'
 
 const WEEK = ['一', '二', '三', '四', '五', '六', '日']
+const POLL_MS = 15000
 
 export function CalendarPage() {
-  const { state, openItem, cancelSchedule } = useStudio()
+  const { state, openItem, cancelSchedule, refreshPosts } = useStudio()
   const today = new Date()
   const [month, setMonth] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1))
   const scheduled = state.drafts
@@ -23,6 +24,20 @@ export function CalendarPage() {
     return d.getFullYear() === year && d.getMonth() === m && d.getDate() === day
   }
   const isToday = (day) => today.getFullYear() === year && today.getMonth() === m && today.getDate() === day
+
+  // QA-N04: staying on this page past the scheduled time must refresh without a manual navigation.
+  useEffect(() => {
+    refreshPosts()
+    const tick = () => {
+      if (document.visibilityState === 'visible') refreshPosts()
+    }
+    const timer = window.setInterval(tick, POLL_MS)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [refreshPosts])
 
   return (
     <div className="grid-2">
@@ -50,7 +65,7 @@ export function CalendarPage() {
       </article>
       <article className="card">
         <h3>即將發布</h3>
-        <p className="sub">取消排程後，這則回到已核准，資料庫仍保留。</p>
+        <p className="sub">取消排程後，這則回到已核准，資料庫仍保留。本頁會自動更新狀態。</p>
         <div className="list">
           {scheduled.length === 0 ? <p className="meta">目前沒有排程。</p> : null}
           {scheduled.map((item) => (

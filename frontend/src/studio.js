@@ -68,6 +68,7 @@ export function initialState() {
     linkedinCaption: '',
     title: '',
     subtitle: '',
+    description: '', // canvas description line (English under Chinese title when language=both)
     canvas: null,
     background: null,
     style: 0,

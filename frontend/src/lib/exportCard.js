@@ -44,8 +44,9 @@ function wrap(ctx, text, maxWidth) {
 }
 
 /**
- * @param {object} card { style: [colorA, colorB], background, credit, company, title, subtitle, font, layout }
+ * @param {object} card { style, background, credit, company, title, subtitle, description, font, layout }
  *   credit: 「圖片來源：…」 for a news photo; also darkens the text side like the editor does
+ *   description: optional third line (English under Chinese title when language=both)
  * @param {number} boardWidth on-screen width of the artboard, so sizes scale like the preview
  */
 export async function exportCard(card, boardWidth = 520) {
@@ -107,17 +108,24 @@ export async function exportCard(card, boardWidth = 520) {
     ctx.stroke()
   }
 
-  // text block: brand, title, subtitle — centred on layout.text like the CSS translate(-50%, -50%)
+  // text block: brand, title, subtitle, description — centred on layout.text like CSS translate(-50%, -50%)
   const kickerSize = 11 * scale
   const titleSize = card.font * scale
   const subSize = Math.max(14, card.font * 0.5) * scale
+  const descSize = Math.max(12, card.font * 0.38) * scale
   ctx.font = `600 ${titleSize}px ${FONT}`
   const titleLines = wrap(ctx, card.title || '', blockWidth)
   ctx.font = `400 ${subSize}px ${FONT}`
   const subLines = card.subtitle ? wrap(ctx, card.subtitle, blockWidth) : []
+  ctx.font = `400 ${descSize}px ${FONT}`
+  const descLines = card.description ? wrap(ctx, card.description, blockWidth) : []
   const titleLead = titleSize * 1.25
   const subLead = subSize * 1.4
-  const height = kickerSize * 1.6 + 8 * scale + titleLines.length * titleLead + (subLines.length ? 10 * scale + subLines.length * subLead : 0)
+  const descLead = descSize * 1.35
+  const height = kickerSize * 1.6 + 8 * scale
+    + titleLines.length * titleLead
+    + (subLines.length ? 10 * scale + subLines.length * subLead : 0)
+    + (descLines.length ? 8 * scale + descLines.length * descLead : 0)
   const left = (card.layout.text.x / 100) * SIZE - blockWidth / 2
   let y = (card.layout.text.y / 100) * SIZE - height / 2
 
@@ -145,6 +153,16 @@ export async function exportCard(card, boardWidth = 520) {
     for (const line of subLines) {
       ctx.fillText(line, left, y + (subLead - subSize) / 2)
       y += subLead
+    }
+    ctx.globalAlpha = 1
+  }
+  if (descLines.length) {
+    y += 8 * scale
+    ctx.globalAlpha = 0.82
+    ctx.font = `400 ${descSize}px ${FONT}`
+    for (const line of descLines) {
+      ctx.fillText(line, left, y + (descLead - descSize) / 2)
+      y += descLead
     }
     ctx.globalAlpha = 1
   }

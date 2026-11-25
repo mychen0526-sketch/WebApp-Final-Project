@@ -84,6 +84,37 @@ function Busy({ full = false }) {
   )
 }
 
+function versionSnapshot(version) {
+  const canvas = version?.canvas_json || {}
+  const texts = canvas.texts || []
+  const of = (type) => texts.find((item) => item.textType === type)?.text || ''
+  return {
+    title: (canvas.ui?.title || version.title || '').replaceAll('\n', ' ').trim(),
+    subtitle: canvas.ui?.subtitle ?? of('highlight'),
+    description: canvas.ui?.description ?? of('description'),
+    content: version.caption_threads || '',
+    igCaption: version.caption_instagram || '',
+    linkedinCaption: version.caption_linkedin || '',
+    style: Number.isInteger(canvas.style) ? canvas.style : 0,
+    font: canvas.ui?.font ?? 30,
+  }
+}
+
+function editorMatchesVersion(state, version) {
+  const snap = versionSnapshot(version)
+  const title = (state.title || '').replaceAll('\n', ' ').trim()
+  return (
+    title === snap.title
+    && (state.subtitle || '') === snap.subtitle
+    && (state.description || '') === (snap.description || '')
+    && state.content === snap.content
+    && state.igCaption === snap.igCaption
+    && (state.linkedinCaption || '') === snap.linkedinCaption
+    && state.style === snap.style
+    && state.font === snap.font
+  )
+}
+
 // 「‹ 2 / 3 ›」: switch between the AI versions of this post.
 function VersionNav() {
   const { state, showVersion } = useStudio()
@@ -92,7 +123,8 @@ function VersionNav() {
   const found = versions.findIndex((item) => item.id === state.versionId)
   const index = found < 0 ? versions.length - 1 : found
   const version = versions[index]
-  const edited = version.caption_threads !== state.content || version.caption_instagram !== state.igCaption
+  // BUG-08: title / subtitle / LinkedIn / style / font also count as edits, not only captions.
+  const edited = !editorMatchesVersion(state, version)
   const busy = Boolean(state.busy)
   const go = (next) => {
     if (edited && !window.confirm('目前的修改會被這個版本取代，確定切換？')) return
@@ -207,6 +239,7 @@ function Canvas({ draggable, compact = false }) {
       company={state.company}
       title={state.title || '尚未寫標題'}
       subtitle={state.subtitle}
+      description={state.description}
       font={state.font}
       layout={layout}
       compact={compact}
@@ -287,17 +320,17 @@ function WriteStage() {
             placeholder="例如：整理近期 AI 產品商業化趨勢，給創業者看"
           />
         </label>
-        <div className="row" style={{ marginTop: 12 }}>
+        <div className="row write-options" style={{ marginTop: 12 }}>
           {TONES.map((tone) => (
             <button key={tone} type="button" className={tone === state.tone ? 'tone on' : 'tone'} onClick={() => patch({ tone })}>{tone}</button>
           ))}
-          <select value={state.audience} onChange={(event) => patch({ audience: event.target.value })} style={{ width: 'auto' }}>
+          <select className="select-chip" value={state.audience} onChange={(event) => patch({ audience: event.target.value })} aria-label="受眾">
             {[...new Set([state.audience, ...AUDIENCES])].map((item) => <option key={item}>{item}</option>)}
           </select>
           <select
+            className="select-chip"
             value={state.language || 'zh'}
             onChange={(event) => patch({ language: event.target.value })}
-            style={{ width: 'auto' }}
             aria-label="文案語言"
             title={LANGUAGES.find(([id]) => id === (state.language || 'zh'))?.[2]}
           >
@@ -309,7 +342,11 @@ function WriteStage() {
           <ReferencePanel />
         </div>
         {state.busy !== 'generating' ? <Busy /> : null}
-        {active?.status === '生成失敗' ? <p className="notice bad" style={{ marginTop: 12 }}>生成失敗：{active.error}</p> : null}
+        {active?.status === '生成失敗' ? (
+          <p className={/停止/.test(active.error || '') ? 'notice' : 'notice bad'} style={{ marginTop: 12 }}>
+            {/停止/.test(active.error || '') ? `已停止：${active.error}` : `生成失敗：${active.error}`}
+          </p>
+        ) : null}
         <div className="action-bar">
           <button className="btn" type="button" onClick={startFresh}>清空重來</button>
           {active?.status === '草稿' ? (
@@ -401,6 +438,14 @@ function EditStage() {
               圖卡副標
               <input value={state.subtitle} onChange={(event) => patch({ subtitle: event.target.value })} />
             </label>
+            <label className="field" style={{ marginTop: 10 }}>
+              圖卡說明{state.language === 'both' ? '（英文）' : ''}
+              <input
+                value={state.description || ''}
+                onChange={(event) => patch({ description: event.target.value })}
+                placeholder={state.language === 'both' ? '中英雙語時這裡應是英文說明' : '選填，顯示在副標下方'}
+              />
+            </label>
             <div className="tabs" style={{ marginTop: 14 }}>
               {REAL_PLATFORM_LIST.map((name) => (
                 <button key={name} type="button" className={copyTab === name ? 'on' : ''} onClick={() => setCopyTab(name)}>{name}</button>
@@ -465,7 +510,7 @@ function EditStage() {
                         className={index === state.style ? 'swatch on' : 'swatch'}
                         style={{ background: `linear-gradient(135deg, ${item[0]}, ${item[1]})` }}
                         title={item[2]}
-                        onClick={() => patch({ style: index, themeName: item[2] })}
+                        onClick={() => patch({ style: index, themeName: item[2], templateId: null, background: null })}
                       />
                     ))}
                   </div>
@@ -579,17 +624,24 @@ function Results({ item }) {
   if (!item?.publications?.length) return null
   return (
     <div className="list" style={{ marginTop: 12 }}>
-      {item.publications.map((pub) => (
-        <div className="item result" key={pub.platform}>
-          <div>
-            <b>{PLATFORM_NAME[pub.platform] || pub.platform}</b>
-            <div className="meta">{pub.status === 'failed' ? pub.error_message : pub.status === 'success' ? '已發布' : '處理中…'}</div>
+      {item.publications.map((pub) => {
+        const uncertain = pub.error_code === 'uncertain' || /不確定|無法確認/.test(pub.error_message || '')
+        return (
+          <div className="item result" key={pub.platform}>
+            <div>
+              <b>{PLATFORM_NAME[pub.platform] || pub.platform}</b>
+              <div className="meta">
+                {pub.status === 'success' ? '已發布' : pub.status === 'failed' ? (pub.error_message || '失敗') : '處理中…'}
+              </div>
+            </div>
+            {pub.permalink ? <a className="btn soft" href={pub.permalink} target="_blank" rel="noreferrer">查看貼文</a> : (
+              <span className={pub.status === 'failed' ? (uncertain ? 'tag amber' : 'tag red') : 'tag amber'}>
+                {pub.status === 'failed' ? (uncertain ? '待確認' : '失敗') : '等待中'}
+              </span>
+            )}
           </div>
-          {pub.permalink ? <a className="btn soft" href={pub.permalink} target="_blank" rel="noreferrer">查看貼文</a> : (
-            <span className={pub.status === 'failed' ? 'tag red' : 'tag amber'}>{pub.status === 'failed' ? '失敗' : '等待中'}</span>
-          )}
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -608,23 +660,29 @@ function PublishStage() {
           <h3>發布</h3>
           {status === '已發布' ? <p className="sub">這則已經發布，只留紀錄。</p> : null}
           {status === '已排程' ? <p className="sub">已排在 {item.when}。取消後會回到已核准。</p> : null}
-          {status === '已核准' ? <p className="sub">審核已通過。選一個主動作即可。</p> : null}
+          {status === '已核准' ? <p className="sub">審核已通過。請分開選擇「現在發布」或「排程」。</p> : null}
           {status === '發布中' ? <p className="sub">正在送到平台…</p> : null}
           {status === '部分發布' ? <p className="sub">有平台失敗。重試只會補發失敗的平台。</p> : null}
           {status === '發布失敗' ? <p className="sub">全部失敗。可以重試，或回到草稿修改。</p> : null}
           <p className="meta">目的地：{item?.destinations?.join('、') || '—'}</p>
           {status === '已核准' ? (
-            <>
-              <label className="field" style={{ marginTop: 14 }}>
-                排程時間
-                <input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} />
-              </label>
-              <div className="action-bar">
-                <button className="btn" type="button" onClick={() => returnToDraft(item.id)}>退回修改</button>
-                <button className="btn" type="button" disabled={busy} onClick={() => publish(item.id, when)}>排程</button>
+            <div className="publish-split">
+              <section className="publish-block">
+                <h4>現在發布</h4>
+                <p className="meta">立刻送到已選平台。按下去就會開始，無法在這裡改成排程。</p>
                 <button className="btn primary" type="button" disabled={busy} onClick={() => publish(item.id, '現在')}>現在發布</button>
-              </div>
-            </>
+              </section>
+              <section className="publish-block muted">
+                <h4>排程稍後發布</h4>
+                <p className="meta">選好時間後才會排入；不會立刻發出。</p>
+                <label className="field">
+                  排程時間
+                  <input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} />
+                </label>
+                <button className="btn" type="button" disabled={busy} onClick={() => publish(item.id, when)}>加入排程</button>
+              </section>
+              <button className="btn" type="button" onClick={() => returnToDraft(item.id)}>退回修改</button>
+            </div>
           ) : null}
           {status === '已排程' ? (
             <div className="action-bar">

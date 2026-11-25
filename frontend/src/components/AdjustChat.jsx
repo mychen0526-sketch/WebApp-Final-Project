@@ -25,10 +25,10 @@ function describe(changes, was) {
 
 /**
  * AI 微調: ask for a change in words; each AI reply lists what it would change and waits for
- * 套用 / 略過. Applied turns can be undone. Nothing is saved until 存成草稿 / 送審.
+ * 套用 / 略過. Applied turns can be undone (last applied first). Nothing is saved until 存成草稿 / 送審.
  */
 export function AdjustChat() {
-  const { state, adjust, applyChanges, patch } = useStudio()
+  const { state, adjust, applyChanges, patch, notify } = useStudio()
   const [turns, setTurns] = useState([])
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
@@ -44,6 +44,14 @@ export function AdjustChat() {
   useEffect(() => () => abortRef.current?.abort(), [])
 
   const setTurn = (index, changes) => setTurns((list) => list.map((turn, i) => (i === index ? { ...turn, ...changes } : turn)))
+
+  // BUG-16: only the most recently applied turn can be undone (stack order).
+  const lastAppliedIndex = (() => {
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      if (turns[i].status === 'applied') return i
+    }
+    return -1
+  })()
 
   async function send(text) {
     const instruction = text.trim()
@@ -70,6 +78,18 @@ export function AdjustChat() {
     }
   }
 
+  function undo(index) {
+    if (locked) return
+    if (index !== lastAppliedIndex) {
+      notify('請先復原較新的調整', '要從最後一次套用的開始往回復原，才會回到原本的樣子。')
+      return
+    }
+    const turn = turns[index]
+    if (!turn?.before) return
+    patch(turn.before)
+    setTurn(index, { status: 'undone' })
+  }
+
   function onKeyDown(event) {
     // Enter sends; Shift+Enter is a new line; never send while an IME is composing (注音 / 倉頡)
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
@@ -84,13 +104,6 @@ export function AdjustChat() {
         <span className="meta">說想改哪裡，確認後才會套用</span>
       </div>
       <div className="chat-list" ref={listRef} aria-live="polite">
-        {turns.length === 0 ? (
-          <div className="chat-suggest">
-            {SUGGESTIONS.map((text) => (
-              <button key={text} type="button" className="tone" disabled={locked} onClick={() => send(text)}>{text}</button>
-            ))}
-          </div>
-        ) : null}
         {turns.map((turn, index) => (
           <div key={index} className={`bubble ${turn.role}${turn.error ? ' error' : ''}`}>
             <p>{turn.text}</p>
@@ -108,7 +121,11 @@ export function AdjustChat() {
             {turn.status === 'applied' ? (
               <div className="row chat-actions">
                 <span className="tag green">已套用</span>
-                <button className="link" type="button" disabled={locked} onClick={() => { patch(turn.before); setTurn(index, { status: 'undone' }) }}>復原</button>
+                {index === lastAppliedIndex ? (
+                  <button className="link" type="button" disabled={locked} onClick={() => undo(index)}>復原</button>
+                ) : (
+                  <span className="meta">先復原較新的</span>
+                )}
               </div>
             ) : null}
             {turn.status === 'skipped' ? <span className="meta">已略過</span> : null}
@@ -121,6 +138,12 @@ export function AdjustChat() {
             <button className="link" type="button" onClick={() => abortRef.current?.abort()}>停止</button>
           </div>
         ) : null}
+      </div>
+      {/* BUG-14: keep suggestions above the input so they stay after the first ask. */}
+      <div className="chat-suggest">
+        {SUGGESTIONS.map((text) => (
+          <button key={text} type="button" className="tone" disabled={locked || pending} onClick={() => send(text)}>{text}</button>
+        ))}
       </div>
       <div className="chat-input">
         <textarea

@@ -85,6 +85,8 @@ export function toDraft(post) {
     title: (canvas.ui?.title && canvas.ui.title.replaceAll('\n', ' ') === post.title ? canvas.ui.title : post.title)
       || post.selected_prompt?.title || '（尚未命名）',
     subtitle: canvas.ui?.subtitle ?? textOf(canvas, 'highlight'),
+    // BUG-12: bilingual cards put English in textType "description".
+    description: canvas.ui?.description ?? textOf(canvas, 'description'),
     content: post.caption_threads || '',
     igCaption: post.caption_instagram || '',
     // posts made before LinkedIn existed fall back to the IG copy (the backend publishes the same)
@@ -100,7 +102,10 @@ export function toDraft(post) {
     date: shortDate(post.updated_at || post.created_at),
     when: post.scheduled_at ? localStamp(post.scheduled_at) : null,
     scheduledAt: post.scheduled_at || null,
-    destinations: (post.platforms || []).map((p) => PLATFORM_NAME[p] || p),
+    destinations: (post.platforms?.length
+      ? post.platforms
+      : (canvas.ui?.platforms || [])
+    ).map((p) => PLATFORM_NAME[p] || p).filter(Boolean),
     layout: layoutFromCanvas(canvas),
     style: Number.isInteger(canvas.style) ? canvas.style : 0,
     font: canvas.ui?.font ?? 30,
@@ -124,8 +129,12 @@ export function patchBody(state) {
   const texts = (canvas.texts || []).map((item) => {
     if (item.textType === 'headline') return { ...item, text: state.title.replaceAll('\n', ' ').slice(0, 60) || item.text }
     if (item.textType === 'highlight' && state.subtitle) return { ...item, text: state.subtitle.slice(0, 60) }
+    if (item.textType === 'description' && state.description) return { ...item, text: state.description.slice(0, 80) }
     return item
   })
+  // Platforms are only locked on submit; keep the editor's checklist in canvas so drafts reopen with the same ticks.
+  const platforms = (state.platforms || []).map((name) => REAL_PLATFORMS[name]).filter(Boolean)
+  const background = state.templateId ? null : state.background
   return {
     title: state.title.replaceAll('\n', ' ').slice(0, 200),
     caption_threads: state.content,
@@ -136,8 +145,19 @@ export function patchBody(state) {
     canvas_json: {
       ...canvas,
       style: state.style,
+      template_id: state.templateId || null,
+      image: background ? { ...(canvas.image || {}), url: background } : canvas.image,
       texts,
-      ui: { layout: state.layout, font: state.font, subtitle: state.subtitle, title: state.title },
+      ui: {
+        ...(canvas.ui || {}),
+        layout: state.layout,
+        font: state.font,
+        subtitle: state.subtitle,
+        description: state.description || '',
+        title: state.title,
+        platforms,
+        background: background ? undefined : false,
+      },
     },
   }
 }

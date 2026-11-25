@@ -3,7 +3,7 @@ import { Modal } from '../components/ui.jsx'
 import { useStudio } from '../context.js'
 import { defaultScheduleInput } from '../lib/posts.js'
 
-const FILTERS = ['全部', '生成中', '草稿', '待審核', '已核准', '已排程', '已發布', '發布失敗']
+const FILTERS = ['全部', '生成中', '生成失敗', '草稿', '待審核', '已核准', '已排程', '已發布', '部分發布', '發布失敗']
 
 function tagClass(status) {
   if (status === '已發布' || status === '已核准') return 'tag green'

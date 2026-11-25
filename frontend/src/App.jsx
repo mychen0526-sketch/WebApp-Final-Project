@@ -4,7 +4,7 @@ import { StudioContext } from './context.js'
 import { api, API_BASE, isAbort } from './lib/api.js'
 import { AuthError, currentUser, DEV_MODE, signOut } from './lib/auth.js'
 import { exportCard } from './lib/exportCard.js'
-import { isBusy, layoutName, mergeDraft, patchBody, PLATFORM_NAME, REAL_PLATFORMS, toDraft, withLocalOffset } from './lib/posts.js'
+import { isBusy, layoutName, mergeDraft, patchBody, PLATFORM_NAME, REAL_PLATFORMS, shortDate, toDraft, withLocalOffset } from './lib/posts.js'
 import { CalendarPage } from './pages/Calendar.jsx'
 import { DiscoverPage } from './pages/Discover.jsx'
 import { LibraryPage } from './pages/Library.jsx'
@@ -26,8 +26,14 @@ const PAGES = {
 }
 
 const RATING = { 喜歡: 'like', 普通: 'neutral', 不喜歡: 'dislike' }
+const RATING_LABEL = { like: '喜歡', neutral: '普通', dislike: '不喜歡' }
 const STAGE_OF = { 草稿: 'edit', 待審核: 'review', 生成中: 'write', 生成失敗: 'write' }
 const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+function platformsFromSettings(settings) {
+  const ids = settings?.default_platforms || []
+  return ids.map((id) => PLATFORM_NAME[id]).filter(Boolean)
+}
 
 export default function App() {
   const [user, setUser] = useState(currentUser)
@@ -46,6 +52,7 @@ function editorFields(item, stage) {
     activeId: item.id,
     title: item.title,
     subtitle: item.subtitle || '',
+    description: item.description || '',
     content: item.content,
     igCaption: item.igCaption,
     linkedinCaption: item.linkedinCaption,
@@ -64,7 +71,8 @@ function editorFields(item, stage) {
     audience: item.audience || undefined,
     language: item.language,
     prompt: item.goal || undefined,
-    platforms: item.destinations?.length ? item.destinations : undefined,
+    // Always restore the checklist (including empty → fall back to Threads only when never set).
+    platforms: item.destinations?.length ? item.destinations : ['Threads'],
     versionId: item.post?.versions?.at(-1)?.id ?? null,
   }
 }
@@ -82,9 +90,12 @@ function Studio({ user, onLogout }) {
   const abortRef = useRef(null)
   const followRef = useRef({ id: null, cancelled: false })
 
-  const notify = useCallback((title, text) => {
-    setToast({ title, text })
-    window.setTimeout(() => setToast((current) => (current?.title === title ? null : current)), 4200)
+  const notify = useCallback((title, text, { sticky = false } = {}) => {
+    setToast({ title, text, sticky })
+    if (sticky) return
+    window.setTimeout(() => setToast((current) => (
+      current?.title === title && !current.sticky ? null : current
+    )), 4200)
   }, [])
 
   const patch = useCallback((partial) => setState((current) => ({ ...current, ...partial })), [])
@@ -94,7 +105,8 @@ function Studio({ user, onLogout }) {
       onLogout()
       return
     }
-    notify(title, error.message || String(error))
+    // Errors stay until「知道了」; success toasts still auto-dismiss.
+    notify(title, error.message || String(error), { sticky: true })
   }, [notify, onLogout])
 
   // Put a backend post into the list (and refresh the editor if it is the open one).
@@ -170,19 +182,34 @@ function Studio({ user, onLogout }) {
       .then((data) => alive && setState((current) => ({ ...current, ...apply(data, current) })))
       .catch((error) => alive && fail(error, `讀取${label}失敗`))
     load(api.listPosts(), (posts) => ({ drafts: posts.map(toDraft) }), '貼文')
-    load(api.getSettings(), (settings, current) => ({
-      tone: settings.default_tone || current.tone,
-      audience: settings.default_audience || current.audience,
-      sensitive: settings.sensitive_words || current.sensitive,
-      company: settings.brand_name || current.company,
-    }), '偏好設定')
-    load(api.accounts(), (accounts) => ({
-      accounts,
-      platforms: accounts.filter((a) => a.connected && !a.expired).map((a) => PLATFORM_NAME[a.platform]).filter(Boolean),
-    }), '平台帳號')
-    load(api.listTemplates(), (templates) => ({
-      templates: templates.map((t) => ({ id: t.id, name: t.name, url: t.public_url })),
-    }), '圖片模板')
+    load(api.getSettings(), (settings, current) => {
+      const defaults = platformsFromSettings(settings)
+      return {
+        tone: settings.default_tone || current.tone,
+        audience: settings.default_audience || current.audience,
+        sensitive: settings.sensitive_words || current.sensitive,
+        company: settings.brand_name || current.company,
+        // BUG-13: restore default destinations; do not let accounts() overwrite this later.
+        platforms: defaults.length ? defaults : current.platforms,
+      }
+    }, '偏好設定')
+    load(api.accounts(), (accounts) => ({ accounts }), '平台帳號')
+    load(api.listFeedback(), (rows) => ({
+      feedback: (rows || []).map((row) => ({
+        rating: RATING_LABEL[row.rating] || row.rating,
+        text: row.post_title || '',
+        time: shortDate(row.created_at) || '',
+      })),
+    }), '回饋')
+    load(api.listTemplates(), (templates, current) => {
+      const list = templates.map((t) => ({ id: t.id, name: t.name, url: t.public_url }))
+      const stillThere = list.some((tpl) => tpl.id === current.templateId)
+      return {
+        templates: list,
+        // BUG-15: drop a workspace template id that no longer exists.
+        templateId: current.templateId && !stillThere ? null : current.templateId,
+      }
+    }, '圖片模板')
 
     // Back from the Threads / Instagram OAuth page
     const params = new URLSearchParams(window.location.search)
@@ -229,6 +256,7 @@ function Studio({ user, onLogout }) {
         company: current.company,
         title: current.title,
         subtitle: current.subtitle,
+        description: current.description,
         font: current.font,
         layout: current.layout,
       }, board?.offsetWidth)
@@ -238,7 +266,8 @@ function Studio({ user, onLogout }) {
     const afterGeneration = (post) => (post.status === 'editing' ? 'edit' : 'write')
     const generationDone = (post) => post.status !== 'generating'
     const reportGeneration = (post) => {
-      if (followRef.current.cancelled) {
+      const stopped = followRef.current.cancelled || /停止/.test(post.generation_error || '')
+      if (stopped) {
         notify('已停止生成', post.status === 'editing' ? '保留原本的內容。' : '可以換個方向再試。')
       } else if (post.status === 'editing') {
         const note = post.canvas_json?.image_note
@@ -248,10 +277,17 @@ function Studio({ user, onLogout }) {
 
     const designOptions = () => {
       const current = stateRef.current
+      let templateId = current.templateId || null
+      // BUG-15: missing template → fall back to AI background instead of failing generation.
+      if (templateId && !templateOf(current, templateId)) {
+        templateId = null
+        patch({ templateId: null })
+        notify('這張模板已經刪除', '改用 AI 底圖繼續生成。')
+      }
       return {
         style: current.style,
         layout: layoutName(current.layout),
-        template_id: current.templateId || null,
+        template_id: templateId,
         // the news article this post is based on; its picture is used per imageMode (photo / blend / ai)
         reference: current.reference || null,
         image_mode: current.reference ? current.imageMode : 'ai',
@@ -284,10 +320,14 @@ function Studio({ user, onLogout }) {
         patch({ stage, page: 'workspace' })
       },
       startFresh() {
+        const current = stateRef.current
+        const templateOk = templateOf(current, current.templateId)
         patch({
           page: 'workspace', stage: 'write', activeId: null, series: [], candidates: [],
-          title: '', subtitle: '', content: '', igCaption: '', linkedinCaption: '', canvas: null, background: null,
+          title: '', subtitle: '', description: '', content: '', igCaption: '', linkedinCaption: '', canvas: null, background: null,
           reference: null, credit: null, imageNote: null,
+          // Keep a still-valid workspace template; drop deleted ones so new posts can generate.
+          templateId: templateOk ? current.templateId : null,
         })
       },
 
@@ -306,7 +346,7 @@ function Studio({ user, onLogout }) {
           const { candidates } = await api.candidates(current.prompt, current.tone, controller.signal)
           patch({
             candidates, series: [], activeId: null, stage: 'write', content: '', igCaption: '', linkedinCaption: '',
-            title: '', subtitle: '', background: null, credit: null, imageNote: null,
+            title: '', subtitle: '', description: '', background: null, credit: null, imageNote: null,
           })
           notify('AI 提出了 3 個方向', '挑一個，AI 就會寫文案並產生圖卡。')
         } catch (error) {
@@ -426,6 +466,7 @@ function Studio({ user, onLogout }) {
         patch({
           title: fields.title,
           subtitle: fields.subtitle,
+          description: fields.description,
           content: fields.content,
           igCaption: fields.igCaption,
           linkedinCaption: fields.linkedinCaption,
@@ -514,7 +555,9 @@ function Studio({ user, onLogout }) {
           try {
             await exportAndUpload(current.activeId)
           } catch (error) {
-            notify('圖卡匯出失敗，改用 AI 底圖', error.message)
+            // QA-N01: do not submit a card that failed to export — publish would miss the overlay text.
+            notify('還不能送審', `圖卡匯出失敗：${error.message || '請再試一次'}。修好後再送審。`, { sticky: true })
+            return
           }
           const post = await api.submit(current.activeId, platforms)
           upsert(post, { load: 'review' })
@@ -579,16 +622,36 @@ function Studio({ user, onLogout }) {
           idle()
         }
       },
-      async retry(id) {
-        busy('publishing')
-        try {
-          upsert(await api.retry(id), { load: 'publish' })
-          const done = await poll(id, (post) => post.status !== 'publishing', { load: () => 'publish' })
-          notify(done.status === 'published' ? '重試成功' : '仍有平台失敗', '詳情看發布結果。')
-        } catch (error) {
-          fail(error, '重試失敗')
-        } finally {
-          idle()
+      async retry(id, confirmUnpublished = []) {
+        // QA-N02: if the backend cannot tell whether a platform already posted, ask before retrying.
+        let confirmed = confirmUnpublished
+        for (;;) {
+          busy('publishing')
+          try {
+            upsert(await api.retry(id, confirmed.length ? { confirm_unpublished: confirmed } : {}), { load: 'publish' })
+            const done = await poll(id, (post) => post.status !== 'publishing', { load: () => 'publish' })
+            notify(done.status === 'published' ? '重試成功' : '仍有平台失敗', '詳情看發布結果。')
+            return
+          } catch (error) {
+            const platforms = error?.code === 'publish_uncertain' ? (error.detail?.platforms || []) : []
+            if (platforms.length && !confirmed.length) {
+              idle()
+              const names = platforms.map((p) => PLATFORM_NAME[p] || p).join('、')
+              const ok = window.confirm(
+                `無法確認 ${names} 是否已發出去。\n\n若你已到平台確認「沒有這則貼文」，按「確定」會再試一次；若已經有貼文，按「取消」避免重複發布。`,
+              )
+              if (ok) {
+                confirmed = platforms
+                continue
+              }
+              notify('已取消重試', `請先到 ${names} 確認有沒有貼文。`, { sticky: true })
+              return
+            }
+            fail(error, '重試失敗')
+            return
+          } finally {
+            idle()
+          }
         }
       },
       async reopen(id) {
@@ -625,6 +688,7 @@ function Studio({ user, onLogout }) {
         }
       },
       async deleteDraft(id) {
+        if (!window.confirm('確定刪除這則貼文？刪了就不能復原。')) return
         try {
           await api.deletePost(id)
           setState((current) => ({
@@ -678,8 +742,15 @@ function Studio({ user, onLogout }) {
       // Attach an article found from the write stage without touching the topic the user typed.
       attachReference(source, mode = source.image_url ? 'photo' : 'ai') {
         if (!editable()) return
-        patch({ reference: source, imageMode: source.image_url ? mode : 'ai' })
-        notify('已加入參考新聞', source.image_url ? '產生時會用這張照片做圖卡，也會引用它的內容。' : '產生時會引用它的內容。')
+        const resolved = source.image_url ? mode : 'ai'
+        patch({ reference: source, imageMode: resolved })
+        // BUG-04: tip must follow the chosen mode, not merely whether the article has a picture.
+        const tip = resolved === 'photo'
+          ? '產生時會用這張照片做圖卡，也會引用它的內容。'
+          : resolved === 'blend'
+            ? '產生時會把照片與品牌風格融合，並引用內容。'
+            : '產生時只會引用它的內容，不會用這張照片。'
+        notify('已加入參考新聞', tip)
       },
       setImageMode(imageMode) {
         if (!editable()) return
@@ -696,7 +767,17 @@ function Studio({ user, onLogout }) {
         patch({ layout })
       },
       applyTemplate(index, tone) {
-        patch({ style: index, templateId: null, themeName: STYLES[index][2], tone: tone || stateRef.current.tone, page: 'workspace' })
+        // BUG-10: locked posts (pending review / approved / …) must keep the submitted card.
+        if (stateRef.current.activeId && !editable()) return
+        patch({
+          style: index,
+          templateId: null,
+          background: null,
+          themeName: STYLES[index][2],
+          tone: tone || stateRef.current.tone,
+          page: 'workspace',
+          stage: stateRef.current.activeId ? 'edit' : stateRef.current.stage,
+        })
         notify('已套用版型', `${STYLES[index][2]}。下次生成或目前的草稿都會用這個配色。`)
       },
       async addTemplate(file, name) {
@@ -734,15 +815,23 @@ function Studio({ user, onLogout }) {
         }
       },
       pickTemplate(id) {
+        // BUG-10: applying a template while reviewing would change the preview, not the locked export.
+        if (stateRef.current.activeId && !editable()) return
         const item = id ? templateOf(stateRef.current, id) : null
-        patch({ templateId: item ? item.id : null, page: 'workspace' })
+        patch({
+          templateId: item ? item.id : null,
+          background: item ? item.url : null,
+          page: 'workspace',
+          stage: stateRef.current.activeId ? 'edit' : stateRef.current.stage,
+        })
         notify(item ? '已套用圖片模板' : '已改回 AI 底圖', item ? `${item.name}。生成時不會再產 AI 底圖。` : '下次生成會由 AI 產底圖。')
       },
 
       // ---------- feedback & settings
       async remember(rating) {
         const current = stateRef.current
-        patch({ feedback: [{ rating, text: current.content.slice(0, 42), time: '剛剛' }, ...current.feedback] })
+        const entry = { rating, text: current.title || current.content.slice(0, 42), time: '剛剛' }
+        patch({ feedback: [entry, ...current.feedback] })
         if (!current.activeId) return
         try {
           await api.feedback(current.activeId, RATING[rating])
@@ -758,6 +847,22 @@ function Studio({ user, onLogout }) {
           notify('已儲存偏好', '下次登入會沿用。')
         } catch (error) {
           fail(error, '儲存偏好失敗')
+        }
+      },
+      // BUG-18 / BUG-13: brand name blur must not rewrite default tone from the open post.
+      async saveBrand() {
+        try {
+          await api.putSettings({ brand_name: stateRef.current.company })
+        } catch (error) {
+          fail(error, '品牌名稱沒有存到')
+        }
+      },
+      async saveDefaultTone(tone) {
+        patch({ tone })
+        try {
+          await api.putSettings({ default_tone: tone })
+        } catch (error) {
+          fail(error, '預設語氣沒有存到')
         }
       },
       async addWord(word) {
@@ -781,9 +886,13 @@ function Studio({ user, onLogout }) {
           fail(error, '敏感詞沒有存到')
         }
       },
-      togglePlatform(name) {
+      togglePlatform(name, { asDefault = false } = {}) {
         const { platforms } = stateRef.current
-        patch({ platforms: platforms.includes(name) ? platforms.filter((item) => item !== name) : [...platforms, name] })
+        const next = platforms.includes(name) ? platforms.filter((item) => item !== name) : [...platforms, name]
+        patch({ platforms: next })
+        if (!asDefault) return
+        const ids = next.map((label) => REAL_PLATFORMS[label]).filter(Boolean)
+        api.putSettings({ default_platforms: ids }).catch((error) => fail(error, '預設平台沒有存到'))
       },
       async connectAccount(platform) {
         try {
@@ -830,9 +939,12 @@ function Studio({ user, onLogout }) {
         <Page />
       </Shell>
       {toast ? (
-        <div className="toast" role="status">
+        <div className={toast.sticky ? 'toast sticky' : 'toast'} role="status">
           <b>{toast.title}</b>
-          {toast.text}
+          <span className="toast-text">{toast.text}</span>
+          {toast.sticky ? (
+            <button type="button" className="toast-ok" onClick={() => setToast(null)}>知道了</button>
+          ) : null}
         </div>
       ) : null}
     </StudioContext.Provider>

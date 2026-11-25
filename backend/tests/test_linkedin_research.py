@@ -10,7 +10,7 @@ from app.services.platforms import linkedin as li
 from app.services.research import RssResearch, normalize_picture, page_meta
 from app.services.webfetch import FetchError, SafeFetcher
 
-from .conftest import CANDIDATE, connect, create_post, jpeg_bytes, to_approved
+from .conftest import PNG, CANDIDATE, FakeFetcher, connect, create_post, export_card, jpeg_bytes, to_approved
 
 PHOTO = "https://news.example.com/lead.jpg"
 REFERENCE = {
@@ -36,15 +36,13 @@ def test_linkedin_publish_uploads_image_then_posts(monkeypatch):
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append((request.method, str(request.url)))
-        if request.url.host == "cdn.example.com":
-            return httpx.Response(200, content=b"PNGDATA", headers={"content-type": "image/png"})
         if request.url.path == "/rest/images":
             assert request.headers["LinkedIn-Version"] == "202605"
             body = json.loads(request.content)
             assert body["initializeUploadRequest"]["owner"] == "urn:li:person:abc"
             return httpx.Response(200, json={"value": {"uploadUrl": "https://upload.example.com/u", "image": "urn:li:image:9"}})
         if request.url.host == "upload.example.com":
-            assert request.content == b"PNGDATA"
+            assert request.content == PNG and request.headers["content-type"] == "image/png"
             return httpx.Response(201)
         if request.url.path == "/rest/posts":
             body = json.loads(request.content)
@@ -56,13 +54,16 @@ def test_linkedin_publish_uploads_image_then_posts(monkeypatch):
 
     real_client = httpx.Client
     monkeypatch.setattr(li.httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
-    publisher = li.LinkedInPublisher("id", "secret", "http://cb")
+    fetcher = FakeFetcher()
+    fetcher.add("https://cdn.example.com/card.png", PNG, "image/png")
+    publisher = li.LinkedInPublisher("id", "secret", "http://cb", fetcher=fetcher)
     result = publisher.publish(
         {"platform_user_id": "abc", "access_token": "tok"}, "第一行\n#AI", "https://cdn.example.com/card.png"
     )
     assert result.external_post_id == "urn:li:share:123"
     assert result.permalink == "https://www.linkedin.com/feed/update/urn:li:share:123/"
-    assert [m for m, _ in seen] == ["GET", "POST", "PUT", "POST"]
+    assert [m for m, _ in seen] == ["POST", "PUT", "POST"]
+    assert fetcher.calls == ["https://cdn.example.com/card.png"]  # downloaded via the SSRF-safe fetcher
 
 
 def test_linkedin_publish_error_message(monkeypatch):
@@ -116,10 +117,11 @@ def test_sensitive_word_in_linkedin_caption_blocks_publish(client):
     post = to_approved(client, ("linkedin",))
     client.post(f"/api/posts/{post['id']}/reject")
     client.patch(f"/api/posts/{post['id']}", json={"caption_linkedin": "這是未公開產品的消息"})
-    client.post(f"/api/posts/{post['id']}/submit", json={"platforms": ["linkedin"]})
-    client.post(f"/api/posts/{post['id']}/approve", json={"readConfirmed": True, "rightsConfirmed": True})
-    resp = client.post(f"/api/posts/{post['id']}/publish")
+    export_card(client, post["id"])
+    # caught as early as submit now, with the word that matched
+    resp = client.post(f"/api/posts/{post['id']}/submit", json={"platforms": ["linkedin"]})
     assert resp.status_code == 422 and resp.json()["code"] == "sensitive_content"
+    assert resp.json()["detail"]["detected"] == ["未公開產品"]
 
 
 # ---------------------------------------------------------------- research

@@ -88,6 +88,28 @@ def version_entry(changes: dict, mode: str | None) -> dict:
     }
 
 
+VERSIONED_FIELDS = ("title", "caption_threads", "caption_instagram", "caption_linkedin")
+
+
+def manual_edit_version(post: dict, versions: list[dict]) -> dict | None:
+    """The post as the user left it, when that differs from the last AI version (they edited it)."""
+    if not post.get("caption_threads"):
+        return None  # first generation: nothing written yet
+    last = versions[-1] if versions else {}
+    if all((post.get(f) or "") == (last.get(f) or "") for f in VERSIONED_FIELDS):
+        return None
+    return version_entry(
+        {
+            "title": post.get("title"),
+            "caption_threads": post.get("caption_threads"),
+            "caption_instagram": post.get("caption_instagram"),
+            "caption_linkedin": post.get("caption_linkedin"),
+            "canvas_json": post.get("canvas_json"),
+        },
+        "manual",
+    )
+
+
 def make_picture(services, user_id: str, post_id: str, candidate: Candidate, design_choice: dict, step) -> tuple[str, dict]:
     """Step C. Returns (background URL, picture info for the canvas)."""
     repo, ai = services.repo, services.ai
@@ -99,7 +121,7 @@ def make_picture(services, user_id: str, post_id: str, candidate: Candidate, des
         repo.add_image(post_id, "template", design_choice.get("template_path") or "", url)
         return url, {"mode": "template"}
 
-    note = None
+    note = design_choice.get("template_note")  # the chosen template was deleted: AI background instead
     mode = design_choice.get("image_mode") or "ai"
     reference = Reference.model_validate(design_choice["reference"]) if design_choice.get("reference") else None
     if mode in ("photo", "blend") and reference and reference.image_url:
@@ -191,7 +213,10 @@ def run_generation(
             "canvas_json": build_canvas(design_choice, url, texts, picture),
             "generation_error": None,
         }
-        versions = list(post.get("versions") or [])[-(MAX_VERSIONS - 1) :]
+        versions = list(post.get("versions") or [])
+        if manual := manual_edit_version(post, versions):
+            versions.append(manual)  # keep the user's hand-edited copy; a rewrite must not lose it
+        versions = versions[-(MAX_VERSIONS - 1) :]
         changes["versions"] = [*versions, version_entry(changes, mode)]
         repo.update_post(user_id, post_id, changes, expected={Status.GENERATING})
     except Cancelled:

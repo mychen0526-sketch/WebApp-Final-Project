@@ -1,0 +1,4 @@
+.build/
+.aws-sam/
+.env.production
+samconfig.toml

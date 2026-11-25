@@ -57,6 +57,7 @@ def services() -> Services:
         dev_auth=True,
         scheduler_enabled=False,
         app_secret="test-app-secret-at-least-32-bytes-long!",
+        publish_retry_backoff_seconds=0,
     )
     return Services(
         settings=settings,
@@ -97,9 +98,25 @@ def connect(client, *platforms):
         assert client.get(f"/api/accounts/{platform}/connect").status_code == 200
 
 
+PNG = bytes.fromhex("89504e470d0a1a0a") + bytes(32)
+
+
+def export_card(client, post_id: str) -> dict:
+    """What the editor does right before submitting: upload the rendered card (background + text)."""
+    resp = client.post(f"/api/posts/{post_id}/images", files={"file": ("card.png", PNG, "image/png")}, data={"source": "exported"})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def submit(client, post_id: str, platforms) -> "object":
+    export_card(client, post_id)
+    return client.post(f"/api/posts/{post_id}/submit", json={"platforms": list(platforms)})
+
+
 def to_pending(client, platforms=("threads", "instagram")) -> dict:
     connect(client, *platforms)
     post = create_post(client)
+    export_card(client, post["id"])
     resp = client.post(f"/api/posts/{post['id']}/submit", json={"platforms": list(platforms)})
     assert resp.status_code == 200, resp.text
     return resp.json()

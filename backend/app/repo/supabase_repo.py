@@ -67,6 +67,16 @@ class SupabaseRepo:
         )
         return len(rows)
 
+    def list_stale_publishing(self, before_iso):
+        return (
+            self.db.table("posts")
+            .select("*")
+            .eq("status", "publishing")
+            .lt("updated_at", before_iso)
+            .execute()
+            .data
+        )
+
     # ---------- images ----------
     def add_image(self, post_id, source, storage_path, public_url):
         row = {"post_id": post_id, "source": source, "storage_path": storage_path, "public_url": public_url}
@@ -112,6 +122,22 @@ class SupabaseRepo:
         row = {"user_id": user_id, "platform": platform, **data}
         return self.db.table("social_accounts").upsert(row, on_conflict="user_id,platform").execute().data[0]
 
+    def update_account(self, user_id, platform, changes):
+        rows = (
+            self.db.table("social_accounts").update(changes).eq("user_id", user_id).eq("platform", platform).execute().data
+        )
+        return rows[0] if rows else None
+
+    def list_expiring_accounts(self, before_iso):
+        return (
+            self.db.table("social_accounts")
+            .select("*")
+            .lt("token_expires_at", before_iso)
+            .is_("auth_error", "null")
+            .execute()
+            .data
+        )
+
     def delete_account(self, user_id, platform):
         rows = self.db.table("social_accounts").delete().eq("user_id", user_id).eq("platform", platform).execute().data
         return bool(rows)
@@ -128,3 +154,18 @@ class SupabaseRepo:
     def add_feedback(self, user_id, post_id, rating):
         row = {"user_id": user_id, "post_id": post_id, "rating": rating}
         return self.db.table("generation_feedback").insert(row).execute().data[0]
+
+    def list_feedback(self, user_id, limit=20):
+        rows = (
+            self.db.table("generation_feedback")
+            .select("*, posts(title)")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+        )
+        for row in rows:
+            post = row.pop("posts", None) or {}
+            row["post_title"] = post.get("title")
+        return rows

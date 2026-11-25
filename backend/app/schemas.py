@@ -1,4 +1,5 @@
 """Request and AI-output models."""
+import json
 from datetime import datetime
 from typing import Literal
 
@@ -158,6 +159,9 @@ class AdjustIn(BaseModel):
     _instruction = field_validator("instruction")(_strip_required)
 
 
+MAX_CANVAS_BYTES = 64 * 1024
+
+
 class PostPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -169,6 +173,14 @@ class PostPatch(BaseModel):
     tone: str | None = Field(default=None, max_length=50)
     audience: str | None = Field(default=None, max_length=100)
 
+    @field_validator("canvas_json")
+    @classmethod
+    def _canvas_size(cls, value: dict | None) -> dict | None:
+        # the editor's layout (texts, positions, colours) is a few KB; anything bigger is not a canvas
+        if value is not None and len(json.dumps(value, ensure_ascii=False, default=str).encode()) > MAX_CANVAS_BYTES:
+            raise ValueError(f"canvas_json 不能超過 {MAX_CANVAS_BYTES // 1024} KB")
+        return value
+
 
 class SubmitIn(BaseModel):
     platforms: list[Platform] = Field(min_length=1)
@@ -177,6 +189,13 @@ class SubmitIn(BaseModel):
     @classmethod
     def _dedupe(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(value))
+
+
+class RetryIn(BaseModel):
+    """Platforms whose previous attempt is "uncertain" (may be live) and that the user checked on
+    the platform and confirms did NOT go out. Only needed where the backend cannot search (LinkedIn)."""
+
+    confirm_unpublished: list[Platform] = Field(default_factory=list)
 
 
 class ApproveIn(BaseModel):
@@ -208,6 +227,13 @@ class SettingsIn(BaseModel):
     default_tone: str | None = Field(default=None, max_length=50)
     default_audience: str | None = Field(default=None, max_length=100)
     sensitive_words: list[str] | None = Field(default=None, max_length=200)
+    # 偏好設定 → 預設發布目的地
+    default_platforms: list[Platform] | None = None
+
+    @field_validator("default_platforms")
+    @classmethod
+    def _dedupe_platforms(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else list(dict.fromkeys(value))
 
     @field_validator("sensitive_words")
     @classmethod

@@ -44,7 +44,7 @@ const GEN_STEPS = [
   ['save', '完成'],
 ]
 const STOPPABLE = new Set(['candidates', 'generating'])
-const MODE_LABEL = { short: '改短', friendly: '語氣放輕', new: '換版本' }
+const MODE_LABEL = { short: '改短', friendly: '語氣放輕', new: '換版本', manual: '手動修改' }
 
 // Generation in progress: which step, the Threads copy as it is written, and 「停止」.
 function GenerationProgress() {

@@ -6,11 +6,11 @@ from ..auth import get_current_user, get_services
 from ..container import Services
 from ..errors import NotFound, Unprocessable
 from ..services.storage import template_path
+from ..services.uploads import read_image
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 
 MAX_TEMPLATE_BYTES = 8 * 1024 * 1024
-IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg"}
 MAX_TEMPLATES = 50
 
 
@@ -34,17 +34,12 @@ async def upload_template(
     services: Services = Depends(get_services),
 ):
     """multipart: `file` (PNG/JPEG ≤ 8MB, 1:1 recommended — the card is 1080×1080), `name`."""
-    ext = IMAGE_TYPES.get(file.content_type or "")
-    if not ext:
-        raise Unprocessable("只接受 PNG 或 JPEG 圖片")
-    data = await file.read()
-    if not data or len(data) > MAX_TEMPLATE_BYTES:
-        raise Unprocessable("圖片大小需介於 1 byte 到 8 MB")
+    data, content_type, ext = await read_image(file, MAX_TEMPLATE_BYTES)
     if len(services.repo.list_templates(user_id)) >= MAX_TEMPLATES:
         raise Unprocessable(f"最多只能存 {MAX_TEMPLATES} 個模板，請先刪除不用的")
     clean = name.strip()[:60] or (file.filename or "未命名模板").rsplit(".", 1)[0][:60]
     path = template_path(user_id, ext)
-    url = services.storage.upload(path, data, file.content_type)
+    url = services.storage.upload(path, data, content_type)
     return services.repo.add_template(user_id, {"name": clean, "storage_path": path, "public_url": url})
 
 

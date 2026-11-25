@@ -27,7 +27,7 @@ copy .env.example .env          # 預設：記憶體資料庫、模擬 AI、模�
 
 ## 接上真的服務
 
-1. **Supabase**：建立專案，在 SQL Editor 依序執行 `supabase/migrations/0001_init.sql`（建 6 張表、RLS、`post-images` bucket）、`0002_templates.sql`（圖片模板）、`0003_versions.sql`、`0004_linkedin_references.sql`（LinkedIn 與新聞圖片）。把 Project URL 和 service role key 填進 `.env` 的 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`。專案若仍用舊版 HS256 JWT secret，再填 `SUPABASE_JWT_SECRET`；新專案走 JWKS，不必填。
+1. **Supabase**：建立專案，在 SQL Editor 依序執行 `supabase/migrations/0001_init.sql`（建 6 張表、RLS、`post-images` bucket）、`0002_templates.sql`（圖片模板）、`0003_versions.sql`、`0004_linkedin_references.sql`（LinkedIn 與新聞圖片）、`0005_publish_reliability.sql`（發布失敗原因、授權失效標記、預設發布平台）。**0005 必須在部署這版後端之前執行**，否則寫入 `error_code`／`auth_error` 會失敗。把 Project URL 和 service role key 填進 `.env` 的 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`。專案若仍用舊版 HS256 JWT secret，再填 `SUPABASE_JWT_SECRET`；新專案走 JWKS，不必填。
 2. **文字（TAIWAN AI RAP）**：在 https://portal.genai.nchc.org.tw 建立 API Key，填 `RAP_API_KEY`。`RAP_BASE_URL` 預設 `https://portal.genai.nchc.org.tw/api/v1`，模型用 `RAP_TEXT_MODEL` 換（可用的 ID 查 `GET {RAP_BASE_URL}/models`）。沒填金鑰就用模擬文案。
 3. **圖卡底圖（fal.ai）**：填 `FAL_API_KEY`。底圖不含文字，文字由前端疊上，所以用最便宜的 FLUX.1 [schnell] 就夠。FLUX 只懂英文，會先請 RAP 把主題寫成一句英文畫面描述（`prompts/c_scene.txt`），再套 `prompts/c_image_flux.txt`。沒填金鑰就用漸層底圖。`/health` 的 `ai`、`image` 欄位會顯示實際使用的服務。
 4. **Threads／Instagram**：在 Meta 開發者後台建立 App，填 `THREADS_APP_ID/SECRET`、`INSTAGRAM_APP_ID/SECRET`，並把 `.env` 裡的 redirect URI 加進 App 設定。然後設 `MOCK_PUBLISH=false`。注意：平台要從**公開網址**抓圖，所以真的發布一定要用 Supabase Storage，記憶體模式的圖片網址平台抓不到。
@@ -55,7 +55,7 @@ generation_failed ─重試→┘                        scheduled ─取消→ 
 | 退回 | `POST /api/posts/{id}/reject`（或 `/return`） | pending_review、approved | editing |
 | 核准 | `POST /api/posts/{id}/approve` | pending_review | approved |
 | 發布 | `POST /api/posts/{id}/publish` | approved | publishing → 結果 |
-| 重試 | `POST /api/posts/{id}/retry` | partially_published、publish_failed | publishing（只發失敗的平台） |
+| 重試 | `POST /api/posts/{id}/retry`（可帶 `{confirm_unpublished: [...]}`） | partially_published、publish_failed | publishing（只發失敗的平台） |
 | 排程 | `POST /api/posts/{id}/schedule` | approved | scheduled |
 | 取消排程 | `POST /api/posts/{id}/cancel-schedule` | scheduled | approved |
 | 重新編輯 | `POST /api/posts/{id}/reopen` | publish_failed | editing |
@@ -64,10 +64,34 @@ generation_failed ─重試→┘                        scheduled ─取消→ 
 
 後端自己守住的規則：
 
-- **送審**：至少一個平台；平台帳號已綁定且未過期；Threads 文案 ≤ 500 字；IG 一定要有圖。
+- **送審**：至少一個平台；平台帳號已綁定、未過期、未被撤銷；Threads 文案 ≤ 500 字；IG 一定要有圖；圖卡要在最後一次修改後匯出成功（`exported`），否則發出去的會是沒有文字的底圖或舊圖卡。
 - **核准**：`readConfirmed` 和 `rightsConfirmed` 都要是 `true`。
-- **發布和排程前**：用使用者的敏感詞再掃一次標題、兩版文案與圖上文字，有命中回 422 並列出詞。
-- **生成**：失敗或超過 10 分鐘沒完成，一律變成 `generation_failed`，不會卡在生成中。
+- **敏感詞**：送審、核准、發布、排程、重試都會掃標題、三版文案與圖卡上看得到的文字（headline、highlight；不畫在圖上的 description 不掃），命中回 422 並列出詞。比對前先做 NFKC（全形轉半形）、不分大小寫、忽略空白與零寬字元（前端 `studio.js` 用同一套規則）。排程到點時發布流程本身再掃一次，命中就記為 `publish_failed`（`error_code = sensitive`）。
+- **圖片**：上傳（`uploaded`、`exported`）只能在 editing；送審後要換圖得先退回。格式依檔案內容判斷，不看 Content-Type。
+- **canvas_json**：上限 64 KB；裡面的圖片網址與模板路徑不會被後端採信，模板一律從資料庫查（只查自己的）。
+- **生成**：失敗或超過 10 分鐘沒完成，一律變成 `generation_failed`，不會卡在生成中。選的模板已刪除時改用 AI 底圖，回應的 `notices` 與 `canvas_json.image_note` 會說明。改寫前若使用者手動改過文案，先把目前的內容存成一個 `mode: "manual"` 的版本。
+- **發布**：不會卡在 publishing。發布準備階段出錯，所有目標平台記為失敗；伺服器在發布途中重開，排程器在 `PUBLISH_STALE_MINUTES`（預設 15）後把它結束成 publish_failed／partially_published。
+
+### 單一平台失敗與重試
+
+每個平台一筆 `publications`，失敗時 `error_code` 說明原因：
+
+| error_code | 意思 | 怎麼辦 |
+| --- | --- | --- |
+| `transient` | 5xx、429、網路錯誤，貼文還沒建立 | 後端已自動重試 `PUBLISH_TRANSIENT_RETRIES` 次（預設 2）；仍失敗就按重試 |
+| `uncertain` | 讓貼文上線的那個請求已送出，但沒收到回應，**可能已經發出** | 重試時 Threads／IG 先到平台找同文案的貼文，找到就記為成功、不重發；LinkedIn 查不到，重試回 409 `publish_uncertain`，使用者到 LinkedIn 確認沒發出後帶 `confirm_unpublished: ["linkedin"]` 再重試 |
+| `auth` | 授權過期、在平台上被撤銷或無法解密 | 帳號被標記 `auth_error`，`GET /api/accounts` 的 `expired`／`needs_reconnect` 為 true，重新連結後再重試 |
+| `not_connected` | 沒有綁定帳號 | 綁定後重試 |
+| `sensitive` | 發布時命中敏感詞 | 重新編輯 |
+| `rejected` | 平台拒絕（內容、額度…） | 依訊息修改或稍後重試 |
+| `internal` | 後端自己的錯誤（資料庫、儲存） | 重試 |
+
+### 社群授權 token
+
+- **加密保存**：`social_accounts.access_token` 以 Fernet（AES + HMAC）加密，存成 `enc:v1:…`；金鑰是 `TOKEN_ENCRYPTION_KEY`，沒設時由 `APP_SECRET` 推導。**換掉這兩個值會讓舊 token 無法解密**，使用者需重新連結（會顯示為授權失效，不會發錯帳號）。舊的明文資料仍可讀，下次連結或續期時改成加密。token 從不回傳給前端。
+- **到期**：排程器每小時把 7 天內（`TOKEN_REFRESH_DAYS`）到期的 Threads／IG 長效 token 續期；LinkedIn 不能續期，`GET /api/accounts` 會回 `expiring_soon: true` 讓前端提醒。
+- **撤銷**：平台回 401 或 Meta OAuthException（code 190）時標記 `auth_error`，之後送審與發布都會擋下並請使用者重新連結；重新連結會清掉標記。解除綁定時，LinkedIn 會一併呼叫官方的 revoke。
+- **OAuth state**：以 `APP_SECRET` 簽章。`MOCK_PUBLISH=false` 時若 `APP_SECRET` 仍是範本值或少於 32 字元，伺服器拒絕啟動。
 
 ## API 一覽
 
@@ -86,11 +110,12 @@ generation_failed ─重試→┘                        scheduled ─取消→ 
 | POST | `/api/templates` | multipart：`file`（PNG/JPEG ≤ 8MB，建議 1080×1080）、`name` |
 | DELETE | `/api/templates/{id}` | 從清單移除；已使用它的貼文照常顯示與發布 |
 | POST | `/api/posts/{id}/feedback` | `{rating: like｜neutral｜dislike}` |
-| GET／PUT | `/api/settings` | 品牌名稱、預設語氣、受眾、敏感詞 |
+| GET | `/api/feedback?limit=` | 最近的回饋（新到舊，含 `post_title`） |
+| GET／PUT | `/api/settings` | 品牌名稱、預設語氣、受眾、敏感詞、`default_platforms` |
 | POST | `/api/safety/scan` | `{title, text}` → `{ok, detected, claims}` |
-| GET | `/api/accounts` | 各平台是否已綁定、是否過期（不回傳 token） |
+| GET | `/api/accounts` | 各平台是否已綁定、`expired`、`needs_reconnect`、`expiring_soon`、`auth_error`（不回傳 token） |
 | GET | `/api/accounts/{platform}/connect` | 回傳官方授權網址 `{url}`；模擬模式直接綁定示範帳號 |
-| DELETE | `/api/accounts/{platform}` | 解除綁定 |
+| DELETE | `/api/accounts/{platform}` | 解除綁定（LinkedIn 同時撤銷 token） |
 
 生成與發布在背景執行，API 先回 202，前端輪詢 `GET /api/posts/{id}` 直到狀態改變。
 
@@ -108,7 +133,7 @@ generation_failed ─重試→┘                        scheduled ─取消→ 
 
 **新聞圖片**：建立或重新生成時帶 `reference`（`/api/research` 的一筆結果）與 `image_mode`（`photo`／`blend`／`ai`）。文案會引用它並在 LinkedIn（與放得下時的 Threads）文末附原文連結；圖片下載後裁成 1080² JPEG 存為 `post_images.source = reference`。`canvas_json` 會多 `reference`、`image_mode`、`credit`（圖卡上的出處）、`image_note`（圖片不能用時改用 AI 底圖的原因）。重新生成不帶 `reference` 沿用原本的，帶 `null` 移除。模板優先於新聞圖片。
 
-**圖片模板**：建立或重新生成時帶 `template_id`，就不呼叫 AI 產底圖，改用該模板當背景（`post_images.source = template`，`canvas_json` 會多 `template_id`）。重新生成不帶 `template_id` 沿用原模板，帶 `null` 改回 AI 底圖。別人的模板一律 404。
+**圖片模板**：建立或重新生成時帶 `template_id`，就不呼叫 AI 產底圖，改用該模板當背景（`post_images.source = template`，`canvas_json` 會多 `template_id`）。重新生成不帶 `template_id` 沿用原模板，帶 `null` 改回 AI 底圖。找不到（已刪除或是別人的）模板不會失敗，改用 AI 底圖並在 `notices` 說明。
 
 發布用的圖：優先用最新的 `exported`（前端把畫布含文字匯出的 PNG），沒有才依序用上傳、模板、生成的底圖。生成的底圖不含文字，所以正式發布前，前端應先匯出並上傳 `exported`。
 
@@ -139,6 +164,6 @@ tests/
 
 ## 尚未處理
 
-- 長效 token 約 60 天到期，目前不會自動續期；到期後要在 P2 重新連結。
-- `access_token` 以明文存在 `social_accounts`（RLS 不開放讀取）；用 Supabase Vault 加密列為延伸。
-- 前端還沒接上這些 API。
+- LinkedIn token 60 天到期且不能續期，到期前只能提醒使用者重新連結。
+- 前端尚未使用：`GET /api/feedback`、`default_platforms`、`notices`、`publish_uncertain` 的確認流程、`needs_reconnect`／`expiring_soon` 提示。
+- OAuth state 還沒綁定發起授權的瀏覽器（cookie）；目前靠簽章與 10 分鐘有效期。

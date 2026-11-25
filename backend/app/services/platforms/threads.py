@@ -8,7 +8,19 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .base import AccountToken, OAuthError, PublishError, PublishResult, check, expires_at, wait_for_container
+from datetime import datetime
+
+from .base import (
+    AccountToken,
+    OAuthError,
+    PublishError,
+    PublishResult,
+    check,
+    expires_at,
+    same_caption,
+    send,
+    wait_for_container,
+)
 
 AUTH_URL = "https://threads.net/oauth/authorize"
 GRAPH = "https://graph.threads.net"
@@ -87,18 +99,57 @@ class ThreadsPublisher:
                 raise PublishError("Threads 貼文沒有文字也沒有圖片")
             params["media_type"] = "TEXT"
         with httpx.Client(timeout=30) as client:
-            container_id = check(client.post(f"{GRAPH}/v1.0/{uid}/threads", params=params))["id"]
+            container_id = send(lambda: client.post(f"{GRAPH}/v1.0/{uid}/threads", params=params))["id"]
             wait_for_container(
                 client, f"{GRAPH}/v1.0/{container_id}", token, "status", self.poll_attempts, self.poll_interval
             )
-            media_id = check(
-                client.post(f"{GRAPH}/v1.0/{uid}/threads_publish", params={"creation_id": container_id, "access_token": token})
+            media_id = send(
+                lambda: client.post(
+                    f"{GRAPH}/v1.0/{uid}/threads_publish", params={"creation_id": container_id, "access_token": token}
+                ),
+                final=True,
             )["id"]
             permalink = None
             try:
                 permalink = check(client.get(f"{GRAPH}/v1.0/{media_id}", params={"fields": "permalink", "access_token": token})).get(
                     "permalink"
                 )
-            except PublishError:
+            except (PublishError, httpx.HTTPError):
                 pass  # the post is live; a missing link is not a failure
         return PublishResult(external_post_id=str(media_id), permalink=permalink, container_id=str(container_id))
+
+    def find_recent(self, account: dict, caption: str, since: datetime) -> PublishResult | None:
+        """Our post from the last attempt, if it went live after all (same text, posted after `since`)."""
+        with httpx.Client(timeout=30) as client:
+            data = send(
+                lambda: client.get(
+                    f"{GRAPH}/v1.0/me/threads",
+                    params={
+                        "fields": "id,text,permalink,timestamp",
+                        "since": int(since.timestamp()),
+                        "limit": 25,
+                        "access_token": account["access_token"],
+                    },
+                )
+            )
+        for item in data.get("data") or []:
+            if same_caption(item.get("text"), caption):
+                return PublishResult(external_post_id=str(item["id"]), permalink=item.get("permalink"), container_id=None)
+        return None
+
+    def refresh(self, account: dict) -> AccountToken:
+        """Long-lived tokens (60 days) can be extended once they are at least a day old."""
+        with httpx.Client(timeout=30) as client:
+            data = check(
+                client.get(
+                    f"{GRAPH}/refresh_access_token",
+                    params={"grant_type": "th_refresh_token", "access_token": account["access_token"]},
+                ),
+                OAuthError,
+            )
+        return AccountToken(
+            platform_user_id=account["platform_user_id"],
+            username=account.get("username"),
+            access_token=data["access_token"],
+            token_expires_at=expires_at(data.get("expires_in")),
+        )

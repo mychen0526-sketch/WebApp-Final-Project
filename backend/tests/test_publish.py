@@ -121,10 +121,6 @@ def test_scheduler_fails_stuck_generation(client, services):
 
 def test_exported_image_preferred_for_publishing(client, services):
     post = to_approved(client, platforms=("instagram",))
-    up = client.post(
-        f"/api/posts/{post['id']}/images",
-        files={"file": ("card.png", b"\x89PNG\r\n\x1a\nexport", "image/png")},
-        data={"source": "exported"},
-    ).json()
+    exported = [i for i in post["images"] if i["source"] == "exported"]
     client.post(f"/api/posts/{post['id']}/publish")
-    assert services.publishers["instagram"].calls[-1]["image_url"] == up["public_url"]
+    assert services.publishers["instagram"].calls[-1]["image_url"] == exported[-1]["public_url"]

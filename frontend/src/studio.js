@@ -109,10 +109,19 @@ export function platformCaption(state, platform) {
   return text
 }
 
+// Same normalization as backend/app/services/safety.py: full-width → half-width (NFKC),
+// case-insensitive, whitespace and zero-width characters ignored. Keep the two in sync.
+const IGNORED = /[\s​-‏⁠-⁤﻿­᠎]+/g
+export const normalizeText = (text) => (text || '').normalize('NFKC').replace(IGNORED, '').toLowerCase()
+
 export function scanText(sensitive, title, content) {
-  const detected = sensitive.filter((word) => content.includes(word) || title.includes(word))
+  const haystack = normalizeText(`${title}\n${content}`)
+  const detected = sensitive.filter((word) => {
+    const needle = normalizeText(word)
+    return needle && haystack.includes(needle)
+  })
   let risks = detected.length ? `偵測到可能敏感詞：${detected.join('、')}` : '未偵測到自訂機密關鍵字'
-  if (/保證賺錢|絕對安全|百分之百/.test(content)) risks += '；另有待確認的絕對性宣稱'
+  if (/保證賺錢|絕對安全|百分之百/.test(normalizeText(content))) risks += '；另有待確認的絕對性宣稱'
   return { detected, risks }
 }
 

@@ -44,7 +44,9 @@ def test_oauth_state_roundtrip(client, services):
 
     resp = client.get(f"/api/accounts/threads/callback?code=abc&state={state}", follow_redirects=False)
     assert resp.status_code == 302 and "connected=threads" in resp.headers["location"]
-    assert services.repo.get_account("11111111-1111-1111-1111-111111111111", "threads")["access_token"] == "token-abc"
+    stored = services.repo.get_account("11111111-1111-1111-1111-111111111111", "threads")["access_token"]
+    assert stored.startswith("enc:v1:") and "token-abc" not in stored  # encrypted at rest
+    assert services.tokens.open(stored) == "token-abc"
 
     tampered = client.get(f"/api/accounts/threads/callback?code=abc&state={state}x", follow_redirects=False)
     assert "connect_error" in tampered.headers["location"]

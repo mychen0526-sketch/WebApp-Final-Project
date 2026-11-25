@@ -8,7 +8,19 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .base import AccountToken, OAuthError, PublishError, PublishResult, check, expires_at, wait_for_container
+from datetime import datetime
+
+from .base import (
+    AccountToken,
+    OAuthError,
+    PublishError,
+    PublishResult,
+    check,
+    expires_at,
+    same_caption,
+    send,
+    wait_for_container,
+)
 
 AUTH_URL = "https://www.instagram.com/oauth/authorize"
 TOKEN_URL = "https://api.instagram.com/oauth/access_token"
@@ -105,18 +117,59 @@ class InstagramPublisher:
         token = account["access_token"]
         base = f"{GRAPH}/{self.version}"
         with httpx.Client(timeout=30) as client:
-            container_id = check(
-                client.post(f"{base}/{uid}/media", params={"image_url": image_url, "caption": caption or "", "access_token": token})
+            container_id = send(
+                lambda: client.post(
+                    f"{base}/{uid}/media", params={"image_url": image_url, "caption": caption or "", "access_token": token}
+                )
             )["id"]
             wait_for_container(client, f"{base}/{container_id}", token, "status_code", self.poll_attempts, self.poll_interval)
-            media_id = check(
-                client.post(f"{base}/{uid}/media_publish", params={"creation_id": container_id, "access_token": token})
+            media_id = send(
+                lambda: client.post(f"{base}/{uid}/media_publish", params={"creation_id": container_id, "access_token": token}),
+                final=True,
             )["id"]
             permalink = None
             try:
                 permalink = check(client.get(f"{base}/{media_id}", params={"fields": "permalink", "access_token": token})).get(
                     "permalink"
                 )
-            except PublishError:
+            except (PublishError, httpx.HTTPError):
                 pass
         return PublishResult(external_post_id=str(media_id), permalink=permalink, container_id=str(container_id))
+
+    def find_recent(self, account: dict, caption: str, since: datetime) -> PublishResult | None:
+        """Our post from the last attempt, if it went live after all (same caption, posted after `since`)."""
+        with httpx.Client(timeout=30) as client:
+            data = send(
+                lambda: client.get(
+                    f"{GRAPH}/{self.version}/me/media",
+                    params={"fields": "id,caption,permalink,timestamp", "limit": 25, "access_token": account["access_token"]},
+                )
+            )
+        for item in data.get("data") or []:
+            posted = item.get("timestamp")
+            try:
+                when = datetime.strptime(posted, "%Y-%m-%dT%H:%M:%S%z") if posted else None
+            except ValueError:
+                when = None
+            if when and when < since:
+                continue
+            if same_caption(item.get("caption"), caption):
+                return PublishResult(external_post_id=str(item["id"]), permalink=item.get("permalink"), container_id=None)
+        return None
+
+    def refresh(self, account: dict) -> AccountToken:
+        """Long-lived tokens (60 days) can be extended once they are at least a day old."""
+        with httpx.Client(timeout=30) as client:
+            data = check(
+                client.get(
+                    f"{GRAPH}/refresh_access_token",
+                    params={"grant_type": "ig_refresh_token", "access_token": account["access_token"]},
+                ),
+                OAuthError,
+            )
+        return AccountToken(
+            platform_user_id=account["platform_user_id"],
+            username=account.get("username"),
+            access_token=data["access_token"],
+            token_expires_at=expires_at(data.get("expires_in")),
+        )

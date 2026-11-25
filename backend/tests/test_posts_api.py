@@ -138,7 +138,8 @@ def test_upload_rules(client):
     pending = to_pending(client)
     url = f"/api/posts/{pending['id']}/images"
     assert client.post(url, files={"file": ("a.png", png, "image/png")}, data={"source": "uploaded"}).status_code == 409
-    assert client.post(url, files={"file": ("a.png", png, "image/png")}, data={"source": "exported"}).status_code == 201
+    # the card that will be published is locked once submitted (BUG-17)
+    assert client.post(url, files={"file": ("a.png", png, "image/png")}, data={"source": "exported"}).status_code == 409
 
 
 def test_feedback(client, services):

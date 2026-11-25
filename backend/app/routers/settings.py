@@ -1,5 +1,6 @@
-"""User settings (brand, default tone/audience, sensitive words) and the safety scan endpoint."""
-from fastapi import APIRouter, Depends
+"""User settings (brand, default tone/audience/platforms, sensitive words), recent feedback and
+the safety scan endpoint."""
+from fastapi import APIRouter, Depends, Query
 
 from ..auth import get_current_user, get_services
 from ..container import Services
@@ -13,6 +14,7 @@ DEFAULTS = {
     "default_tone": "專業分析",
     "default_audience": "創業者與科技從業者",
     "sensitive_words": safety.DEFAULT_SENSITIVE_WORDS,
+    "default_platforms": [],
 }
 
 
@@ -32,6 +34,16 @@ def get_settings(user_id: str = Depends(get_current_user), services: Services = 
 def put_settings(body: SettingsIn, user_id: str = Depends(get_current_user), services: Services = Depends(get_services)):
     services.repo.upsert_settings(user_id, body.model_dump(exclude_unset=True))
     return load_settings(services, user_id)
+
+
+@router.get("/feedback")
+def recent_feedback(
+    limit: int = Query(default=20, ge=1, le=100),
+    user_id: str = Depends(get_current_user),
+    services: Services = Depends(get_services),
+):
+    """偏好設定「最近的回饋」: newest first, with the post title."""
+    return services.repo.list_feedback(user_id, limit)
 
 
 @router.post("/safety/scan")

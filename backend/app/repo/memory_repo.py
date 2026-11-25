@@ -104,6 +104,15 @@ class MemoryRepo:
                     count += 1
         return count
 
+    def list_stale_publishing(self, before_iso: str) -> list[dict]:
+        before = parse_ts(before_iso)
+        with self._lock:
+            return [
+                copy.deepcopy(p)
+                for p in self.posts.values()
+                if p["status"] == "publishing" and parse_ts(p["updated_at"]) < before
+            ]
+
     # ---------- images ----------
     def add_image(self, post_id, source, storage_path, public_url):
         with self._lock:
@@ -168,6 +177,7 @@ class MemoryRepo:
                 "external_post_id": None,
                 "permalink": None,
                 "error_message": None,
+                "error_code": None,
                 "published_at": None,
                 "created_at": now,
                 "updated_at": now,
@@ -199,9 +209,26 @@ class MemoryRepo:
             self.accounts[(user_id, platform)] = row
             return dict(row)
 
+    def update_account(self, user_id, platform, changes):
+        with self._lock:
+            row = self.accounts.get((user_id, platform))
+            if not row:
+                return None
+            row.update(copy.deepcopy(changes), updated_at=now_iso())
+            return dict(row)
+
     def delete_account(self, user_id, platform):
         with self._lock:
             return self.accounts.pop((user_id, platform), None) is not None
+
+    def list_expiring_accounts(self, before_iso):
+        before = parse_ts(before_iso)
+        with self._lock:
+            return [
+                dict(a)
+                for a in self.accounts.values()
+                if a.get("token_expires_at") and parse_ts(a["token_expires_at"]) < before and not a.get("auth_error")
+            ]
 
     # ---------- settings / feedback ----------
     def get_settings(self, user_id):
@@ -220,3 +247,11 @@ class MemoryRepo:
             row = {"id": str(uuid.uuid4()), "user_id": user_id, "post_id": post_id, "rating": rating, "created_at": now_iso()}
             self.feedback.append(row)
             return dict(row)
+
+    def list_feedback(self, user_id, limit=20):
+        with self._lock:
+            rows = [dict(f) for f in self.feedback if f["user_id"] == user_id]
+            for row in rows:
+                post = self.posts.get(row["post_id"])
+                row["post_title"] = post.get("title") if post else None
+        return sorted(rows, key=lambda f: f["created_at"], reverse=True)[:limit]

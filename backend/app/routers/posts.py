@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from ..auth import get_current_user, get_services
 from ..container import Services
+from ..jobs import dispatch
 from ..errors import Conflict, NotFound, Unprocessable
 from ..schemas import (
     LANGUAGES,
@@ -19,19 +20,19 @@ from ..schemas import (
     PostCreate,
     PostPatch,
     RegenerateIn,
+    RetryIn,
     ScheduleIn,
     SubmitIn,
 )
 from ..services import design, safety
 from ..services.ai import AIError
-from ..services.generation import run_generation
-from ..services.publishing import caption_for, publish_post
+from ..services.publishing import caption_for, unverifiable_uncertain
 from ..services.storage import image_path
+from ..services.uploads import read_image
 from ..state import Status, allowed_from, require
 from ..timeutil import now_iso, parse_ts, utcnow
 from .candidates import GenerationFailed
 from .settings import load_settings
-from .templates import get_owned_template
 
 router = APIRouter(prefix="/api/posts", tags=["posts"])
 
@@ -39,8 +40,8 @@ THREADS_MAX_CHARS = 500
 INSTAGRAM_MAX_CHARS = 2200
 LINKEDIN_MAX_CHARS = 3000
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
-IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg"}
 STREAM_LIMIT_SECONDS = 10 * 60
+TEMPLATE_GONE = "這張模板已經刪除，改用 AI 底圖"
 
 
 # ---------------------------------------------------------------- helpers
@@ -69,16 +70,31 @@ def _transition(services: Services, user_id: str, post: dict, action: str, chang
 
 
 def _with_template(services: Services, user_id: str, choice: dict, template_id: str | None) -> dict:
-    """Attach the user's template (checked for ownership now, so a bad id is a 404 and not a
-    generation failure). Its URL travels with the choice because the template may be deleted later."""
+    """Attach the user's template, looked up in the database (only the user's own). Its URL travels
+    with the choice because the template may be deleted later. A template that no longer exists (or
+    belongs to someone else) does not fail the post: it is generated with an AI background and
+    `template_note` says why (shown as canvas_json.image_note and in the response's `notices`)."""
     if template_id:
-        template = get_owned_template(services, user_id, template_id)
-        choice.update(
-            template_id=template["id"],
-            template_url=template["public_url"],
-            template_path=template["storage_path"],
-        )
+        template = services.repo.get_template(user_id, template_id)
+        if template:
+            choice.update(
+                template_id=template["id"],
+                template_url=template["public_url"],
+                template_path=template["storage_path"],
+            )
+        else:
+            choice["template_note"] = TEMPLATE_GONE
     return choice
+
+
+def _post_template_image(services: Services, post_id: str) -> dict | None:
+    """The template background this post was generated with (written by the server, so trusted)."""
+    rows = [i for i in services.repo.list_images(post_id) if i["source"] == "template"]
+    return max(rows, key=lambda i: i["created_at"]) if rows else None
+
+
+def _notices(choice: dict) -> list[str]:
+    return [choice["template_note"]] if choice.get("template_note") else []
 
 
 def post_language(post: dict) -> str:
@@ -105,13 +121,24 @@ def _design_from(services: Services, user_id: str, post: dict, body) -> dict:
     choice["language"] = body.language or post_language(post)
     if "template_id" in body.model_fields_set:  # explicit null drops the template
         return _with_template(services, user_id, choice, body.template_id)
-    if canvas.get("template_id"):  # keep the previous template, even if it was removed from the picker
-        choice.update(template_id=canvas["template_id"], template_url=canvas["image"]["url"],
-                      template_path=canvas.get("template_path"))
+    if canvas.get("template_id"):
+        # Keep the previous template, even if it was removed from the picker. canvas_json is
+        # written by the client, so its URL / storage path are never used: the template comes from
+        # the database, or else from the template image the server stored for this post.
+        template = services.repo.get_template(user_id, str(canvas["template_id"]))
+        if template:
+            choice.update(template_id=template["id"], template_url=template["public_url"],
+                          template_path=template["storage_path"])
+        elif stored := _post_template_image(services, post["id"]):
+            choice.update(template_id=str(canvas["template_id"]), template_url=stored["public_url"],
+                          template_path=stored["storage_path"])
+        else:
+            choice["template_note"] = TEMPLATE_GONE
     return choice
 
 
 def _assert_safe(services: Services, user_id: str, post: dict) -> None:
+    """Sensitive words block submit, approve, publish, schedule and retry (422 with the words)."""
     words = load_settings(services, user_id)["sensitive_words"]
     result = safety.scan(safety.post_text(post), words)
     if not result["ok"]:
@@ -122,17 +149,41 @@ def _assert_safe(services: Services, user_id: str, post: dict) -> None:
         )
 
 
+PLATFORM_LABEL = {"threads": "Threads", "instagram": "Instagram", "linkedin": "LinkedIn"}
+
+
 def _account_problems(services: Services, user_id: str, platforms: list[str]) -> list[str]:
     problems = []
     for platform in platforms:
+        label = PLATFORM_LABEL.get(platform, platform)
         account = services.repo.get_account(user_id, platform)
         if not account:
-            problems.append(f"{platform} 尚未綁定帳號")
+            problems.append(f"{label} 尚未綁定帳號")
+            continue
+        if account.get("auth_error"):
+            problems.append(f"{label} 帳號授權已失效（可能在平台上被撤銷），請重新連結")
             continue
         expires = parse_ts(account.get("token_expires_at"))
         if expires and expires <= utcnow():
-            problems.append(f"{platform} 帳號授權已過期，請重新連結")
+            problems.append(f"{label} 帳號授權已過期，請重新連結")
     return problems
+
+
+def _card_export_problem(services: Services, post: dict, images: list[dict]) -> str | None:
+    """The card is published as the PNG the editor exports (background + text). Without a fresh
+    export the platforms would get the bare background with none of the card text, or an older
+    card from before the last edit, so submitting is blocked until the export succeeds."""
+    canvas = post.get("canvas_json") or {}
+    if not images or not canvas.get("texts"):
+        return None
+    exported = [i for i in images if i["source"] == "exported"]
+    latest = max((parse_ts(i["created_at"]) for i in exported), default=None)
+    saved = parse_ts(post.get("updated_at"))
+    if latest is None:
+        return "圖卡還沒有匯出成功，請重試送審（發布會用含文字的圖卡）"
+    if saved and latest < saved:
+        return "圖卡在最後一次修改後沒有重新匯出，請重試送審"
+    return None
 
 
 # ---------------------------------------------------------------- create / read
@@ -161,9 +212,8 @@ def create_post(
             "status": Status.GENERATING.value,
         }
     )
-    token = services.progress.start(post["id"])
-    background.add_task(run_generation, services, user_id, post["id"], choice, None, token)
-    return _detail(services, post)
+    dispatch(services, background, "generate", user_id=user_id, post_id=post["id"], choice=choice, mode=None)
+    return {**_detail(services, post), "notices": _notices(choice)}
 
 
 @router.get("")
@@ -199,9 +249,8 @@ def regenerate(
         changes["selected_prompt"] = body.selected.model_dump()
     choice = _design_from(services, user_id, post, body)
     updated = _transition(services, user_id, post, "regenerate", changes)
-    token = services.progress.start(post_id)
-    background.add_task(run_generation, services, user_id, post_id, choice, body.mode, token)
-    return _detail(services, updated)
+    dispatch(services, background, "generate", user_id=user_id, post_id=post_id, choice=choice, mode=body.mode)
+    return {**_detail(services, updated), "notices": _notices(choice)}
 
 
 @router.post("/{post_id}/cancel")
@@ -315,25 +364,21 @@ async def upload_image(
     user_id: str = Depends(get_current_user),
     services: Services = Depends(get_services),
 ):
-    """Store an image. `uploaded` replaces a picture while editing; `exported` is the canvas PNG that
-    will actually be published, so it is also accepted while the post is locked for review."""
+    """Store an image. `uploaded` replaces a picture; `exported` is the canvas PNG that will actually
+    be published (the editor uploads it right before submitting). Both only while editing: once a
+    post is submitted the picture that will go out is locked, so it cannot be swapped after review
+    without going back to editing (and through review again)."""
     post = _get(services, user_id, post_id)
-    allowed = {
-        "uploaded": {Status.EDITING},
-        "exported": {Status.EDITING, Status.PENDING_REVIEW, Status.APPROVED},
-    }
-    if source not in allowed:
+    if source not in ("uploaded", "exported"):
         raise Unprocessable("source 只能是 uploaded 或 exported")
-    if post["status"] not in allowed[source]:
-        raise Conflict(f"目前狀態「{post['status']}」不能上傳 {source} 圖片")
-    ext = IMAGE_TYPES.get(file.content_type or "")
-    if not ext:
-        raise Unprocessable("只接受 PNG 或 JPEG 圖片")
-    data = await file.read()
-    if not data or len(data) > MAX_UPLOAD_BYTES:
-        raise Unprocessable("圖片大小需介於 1 byte 到 8 MB")
+    if post["status"] != Status.EDITING:
+        raise Conflict(
+            f"目前狀態「{post['status']}」不能上傳圖片，待審核或已核准的貼文要先退回成草稿",
+            detail={"status": post["status"], "action": "upload_image"},
+        )
+    data, content_type, ext = await read_image(file, MAX_UPLOAD_BYTES)
     path = image_path(user_id, post_id, ext)
-    url = services.storage.upload(path, data, file.content_type)
+    url = services.storage.upload(path, data, content_type)
     return services.repo.add_image(post_id, source, path, url)
 
 
@@ -379,8 +424,11 @@ def submit(
             problems.append(f"LinkedIn 文案 {len(linkedin_caption)} 字，超過上限 {LINKEDIN_MAX_CHARS}")
         if not linkedin_caption.strip() and not images:
             problems.append("LinkedIn 貼文需要文字或圖片")
+    if export_problem := _card_export_problem(services, post, images):
+        problems.append(export_problem)
     if problems:
         raise Unprocessable("還不能送審：" + "；".join(problems), detail={"problems": problems}, code="submit_blocked")
+    _assert_safe(services, user_id, post)  # say which word it is now, not only when publishing
     updated = _transition(
         services, user_id, post, "submit", {"status": Status.PENDING_REVIEW.value, "platforms": body.platforms}
     )
@@ -412,7 +460,8 @@ def approve(
     require(post, "approve")
     if not (body.read_confirmed and body.rights_confirmed):
         raise Unprocessable("核准前需勾選「已讀過全文」與「有使用權利」", code="confirmation_required")
-    updated = _transition(services, user_id, post, "approve", {"status": Status.APPROVED.value, "approved_at": now_iso()})
+    _assert_safe(services, user_id, post)  # words may have been added to the list after submitting
+    updated =_transition(services, user_id, post, "approve", {"status": Status.APPROVED.value, "approved_at": now_iso()})
     return _detail(services, updated)
 
 
@@ -430,7 +479,7 @@ def publish(
     require(post, "publish")
     _assert_safe(services, user_id, post)
     updated = _transition(services, user_id, post, "publish", {"status": Status.PUBLISHING.value})
-    background.add_task(publish_post, services, updated)
+    dispatch(services, background, "publish", user_id=user_id, post_id=post_id)
     return _detail(services, updated)
 
 
@@ -438,16 +487,32 @@ def publish(
 def retry(
     post_id: str,
     background: BackgroundTasks,
+    body: RetryIn | None = None,
     user_id: str = Depends(get_current_user),
     services: Services = Depends(get_services),
 ):
-    """Retry only the platforms that did not succeed (E6, E9)."""
+    """Retry only the platforms that did not succeed (E6, E9).
+
+    A platform whose last attempt is `uncertain` (request sent, no answer) may already show the post.
+    Threads / Instagram are searched first and the found post is recorded instead of posting twice.
+    LinkedIn cannot be searched with our scopes, so the retry is refused (409 `publish_uncertain`)
+    until the user checks LinkedIn and sends {"confirm_unpublished": ["linkedin"]}."""
     post = _get(services, user_id, post_id)
     require(post, "retry")
+    _assert_safe(services, user_id, post)
+    confirmed = list((body.confirm_unpublished if body else []) or [])
     succeeded = {p["platform"] for p in services.repo.list_publications(post_id) if p["status"] == "success"}
     targets = [p for p in post.get("platforms") or [] if p not in succeeded]
+    unverified = [p for p in unverifiable_uncertain(services, post_id, targets) if p not in confirmed]
+    if unverified:
+        names = "、".join(PLATFORM_LABEL.get(p, p) for p in unverified)
+        raise Conflict(
+            f"{names} 上一次發布沒有收到回應，貼文可能已經發出。請先到 {names} 確認；確定沒有發出再重試",
+            detail={"platforms": unverified, "action": "retry"},
+            code="publish_uncertain",
+        )
     updated = _transition(services, user_id, post, "retry", {"status": Status.PUBLISHING.value})
-    background.add_task(publish_post, services, updated, targets)
+    dispatch(services, background, "publish", user_id=user_id, post_id=post_id, targets=targets, confirmed=confirmed)
     return _detail(services, updated)
 
 

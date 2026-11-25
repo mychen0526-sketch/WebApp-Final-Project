@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Social post studio: FastAPI backend on Lambda (arm64, Function URL with response streaming,
+  Lambda Web Adapter), EventBridge schedules, and the Vite frontend on S3 + CloudFront.
+  Secrets are not in this template: the backend reads its .env from one SSM SecureString parameter.
+
+Parameters:
+  FunctionName:
+    Type: String
+    Default: social-api
+  EnvParameterName:
+    Type: String
+    Default: /social-api/env
+    Description: SSM SecureString holding the backend .env (see deploy/README.md)
+
+Resources:
+  ApiLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${FunctionName}
+      RetentionInDays: 7
+
+  Api:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      CodeUri: .build/lambda.zip
+      Handler: run.sh
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 512
+      # long enough for one generation / publish (job invocations) and the 10-minute SSE stream
+      Timeout: 600
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:30
+      LoggingConfig:
+        LogGroup: !Ref ApiLogs
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          AWS_LWA_PORT: "8000"
+          AWS_LWA_READINESS_CHECK_PATH: /health
+          AWS_LWA_INVOKE_MODE: response_stream
+          AWS_LWA_PASS_THROUGH_PATH: /internal/lambda-events
+          ENV_PARAMETER: !Ref EnvParameterName
+          # the in-process loop cannot run on Lambda; the schedules below call it instead
+          SCHEDULER_ENABLED: "false"
+      FunctionUrlConfig:
+        AuthType: NONE
+        InvokeMode: RESPONSE_STREAM
+        # no Cors block: FastAPI's CORSMiddleware answers (two sets of headers break browsers)
+      EventInvokeConfig:
+        # async jobs must never run twice: a retried publish could post the same content again
+        MaximumRetryAttempts: 0
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${EnvParameterName}
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${FunctionName}
+      Events:
+        Tick:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 minute)
+            Input: '{"job": "tick"}'
+            RetryPolicy:
+              MaximumRetryAttempts: 0
+        RefreshTokens:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(1 hour)
+            Input: '{"job": "refresh_tokens"}'
+            RetryPolicy:
+              MaximumRetryAttempts: 0
+
+  # Since Oct 2025 a public Function URL also needs lambda:InvokeFunction (limited to URL calls)
+  ApiUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Api
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  SiteOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-site
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Site:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_200  # includes Asia edges; the free tier covers 1 TB/month anyway
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteOac.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+        # single-page app: unknown paths serve index.html
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${SiteBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Site}
+
+Outputs:
+  ApiUrl:
+    Description: Backend base URL (VITE_API_BASE, PUBLIC_BASE_URL, OAuth redirect URIs)
+    Value: !GetAtt ApiUrl.FunctionUrl
+  SiteUrl:
+    Description: Frontend URL (FRONTEND_URL, CORS_ORIGINS)
+    Value: !Sub https://${Site.DomainName}
+  SiteBucketName:
+    Value: !Ref SiteBucket
+  DistributionId:
+    Value: !Ref Site

@@ -17,14 +17,17 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .base import AccountToken, OAuthError, PublishError, PublishResult, expires_at
+from ..webfetch import IMAGE_TYPES, FetchError, Fetcher, SafeFetcher, sniff_image
+from .base import AccountToken, OAuthError, PublishError, PublishResult, TransientError, UncertainError, classify, expires_at
 
 AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
-USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
+REVOKE_URL = "https://www.linkedin.com/oauth/v2/revoke"
+USERINFO_URL ="https://api.linkedin.com/v2/userinfo"
 REST = "https://api.linkedin.com/rest"
 SCOPES = "openid profile w_member_social"
 MAX_CHARS = 3000
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 _RESERVED = re.compile(r"([\\|{}@\[\]()<>#*_~])")
 _HASHTAG = re.compile(r"(?<!\S)#(\w+)")
@@ -62,7 +65,17 @@ class LinkedInPublisher:
     platform = "linkedin"
     is_mock = False
 
-    def __init__(self, client_id: str, client_secret: str, redirect_uri: str, api_version: str = "202605"):
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        redirect_uri: str,
+        api_version: str = "202605",
+        fetcher: Fetcher | None = None,
+    ):
+        # The picture is downloaded through the SSRF-safe fetcher: it only ever reaches public hosts,
+        # so a crafted image URL cannot make the server read 169.254.169.254 or the private network.
+        self.fetcher = fetcher or SafeFetcher(timeout=30)
         self.client_id = client_id
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
@@ -112,6 +125,14 @@ class LinkedInPublisher:
             token_expires_at=expires_at(token_data.get("expires_in")),
         )
 
+    def revoke(self, account: dict) -> None:
+        """Invalidate the token at LinkedIn when the user disconnects (best effort)."""
+        with httpx.Client(timeout=15) as client:
+            client.post(
+                REVOKE_URL,
+                data={"client_id": self.client_id, "client_secret": self.client_secret, "token": account["access_token"]},
+            )
+
     def _headers(self, token: str) -> dict:
         return {
             "Authorization": f"Bearer {token}",
@@ -119,28 +140,47 @@ class LinkedInPublisher:
             "X-Restli-Protocol-Version": "2.0.0",
         }
 
+    def _call(self, request, *, final: bool = False) -> httpx.Response:
+        try:
+            resp = request()
+        except httpx.TransportError as exc:
+            if final:
+                raise UncertainError(f"LinkedIn 沒有回應（{exc.__class__.__name__}），貼文可能已經發出") from exc
+            raise TransientError(f"連不上 LinkedIn（{exc.__class__.__name__}），請稍後重試") from exc
+        if resp.status_code >= 400:
+            if final and resp.status_code >= 500:
+                raise UncertainError(f"LinkedIn 回應錯誤（HTTP {resp.status_code}），貼文可能已經發出")
+            raise classify(resp, linkedin_error(resp))
+        return resp
+
+    def _download(self, image_url: str) -> tuple[bytes, str]:
+        try:
+            picture = self.fetcher.get(image_url, MAX_IMAGE_BYTES, accept=tuple(IMAGE_TYPES))
+        except FetchError as exc:
+            raise PublishError(f"讀不到要發布的圖片（{exc}）") from exc
+        content_type = sniff_image(picture.data)
+        if content_type not in ("image/png", "image/jpeg"):
+            raise PublishError("要發布的圖片不是 PNG 或 JPEG")
+        return picture.data, content_type
+
     def _upload_image(self, client: httpx.Client, token: str, owner: str, image_url: str) -> str:
-        picture = client.get(image_url)
-        if picture.status_code >= 400:
-            raise PublishError(f"讀不到要發布的圖片（HTTP {picture.status_code}）")
-        init = client.post(
-            f"{REST}/images?action=initializeUpload",
-            json={"initializeUploadRequest": {"owner": owner}},
-            headers=self._headers(token),
+        data, content_type = self._download(image_url)
+        init = self._call(
+            lambda: client.post(
+                f"{REST}/images?action=initializeUpload",
+                json={"initializeUploadRequest": {"owner": owner}},
+                headers=self._headers(token),
+            )
         )
-        if init.status_code >= 400:
-            raise PublishError(linkedin_error(init))
         value = init.json().get("value") or {}
         upload_url, image_urn = value.get("uploadUrl"), value.get("image")
         if not upload_url or not image_urn:
             raise PublishError("LinkedIn 沒有回傳圖片上傳網址")
-        put = client.put(
-            upload_url,
-            content=picture.content,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": picture.headers.get("content-type", "image/png")},
+        self._call(
+            lambda: client.put(
+                upload_url, content=data, headers={"Authorization": f"Bearer {token}", "Content-Type": content_type}
+            )
         )
-        if put.status_code >= 400:
-            raise PublishError(linkedin_error(put))
         return image_urn
 
     def publish(self, account: dict, caption: str, image_url: str | None) -> PublishResult:
@@ -163,12 +203,11 @@ class LinkedInPublisher:
             if image_url:
                 image_urn = self._upload_image(client, token, owner, image_url)
                 body["content"] = {"media": {"id": image_urn, "altText": (caption or "").split("\n")[0][:120]}}
-            resp = client.post(f"{REST}/posts", json=body, headers=self._headers(token))
-            if resp.status_code >= 400:
-                raise PublishError(linkedin_error(resp))
+            resp = self._call(lambda: client.post(f"{REST}/posts", json=body, headers=self._headers(token)), final=True)
             post_urn = resp.headers.get("x-restli-id") or resp.headers.get("x-linkedin-id")
             if not post_urn:
-                raise PublishError("LinkedIn 沒有回傳貼文 ID")
+                # 201 without an id: the post exists but we cannot link to it
+                raise UncertainError("LinkedIn 已接受貼文但沒有回傳貼文 ID，請到 LinkedIn 確認")
         return PublishResult(
             external_post_id=post_urn,
             permalink=f"https://www.linkedin.com/feed/update/{post_urn}/",

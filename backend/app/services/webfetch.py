@@ -6,6 +6,7 @@ link cannot make the server call 127.0.0.1, the cloud metadata endpoint or the p
 Bodies are size-capped and read as a stream.
 """
 import ipaddress
+import os
 import socket
 import ssl
 from dataclasses import dataclass
@@ -50,6 +51,27 @@ def _public_host(url: str) -> None:
             raise FetchError("拒絕連到內部網路位址")
 
 
+def _check_peer(resp: httpx.Response) -> None:
+    """DNS rebinding: the name may resolve to a public IP for _public_host and to 127.0.0.1 a moment
+    later when httpx connects. Check the address the connection actually reached before reading
+    any of the body. (Skipped when the server itself goes through a configured HTTP proxy.)"""
+    stream = resp.extensions.get("network_stream")
+    if stream is None or _PROXY_CONFIGURED:
+        return
+    peer = stream.get_extra_info("server_addr")
+    if not peer:
+        return
+    try:
+        address = ipaddress.ip_address(str(peer[0]).split("%")[0])
+    except ValueError:
+        return
+    if not address.is_global:
+        raise FetchError("拒絕連到內部網路位址")
+
+
+_PROXY_CONFIGURED = any(os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"))
+
+
 class _NoAlpnContext(ssl.SSLContext):
     """httpcore always offers ALPN "http/1.1" in the TLS handshake. Bing's edge treats that
     fingerprint as a bot and serves a degraded news feed: empty for "SpaceX", loosely matched
@@ -84,6 +106,7 @@ class SafeFetcher:
                 _public_host(url)
                 try:
                     with client.stream("GET", url) as resp:
+                        _check_peer(resp)
                         if resp.is_redirect:
                             location = resp.headers.get("location")
                             if not location:

@@ -5,6 +5,7 @@ restart, the stream falls back to reading the post status from the database.
 """
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field, replace
 
@@ -21,6 +22,12 @@ class Progress:
     cancelled: bool = False
     done: bool = False
     version: int = 0  # bumps on every change so the stream only sends news
+    ended_at: float | None = None  # monotonic time it finished or was stopped
+
+
+# Finished entries are kept a while for streams that connect late, then dropped (else the hub
+# grows by one entry per generation for the life of the process).
+KEEP_FINISHED_SECONDS = 10 * 60
 
 
 @dataclass
@@ -32,8 +39,18 @@ class ProgressHub:
         """Begin tracking a run; returns its token. A newer run replaces (and so stops) an older one."""
         token = uuid.uuid4().hex
         with self._lock:
+            self._prune()
             self._items[post_id] = Progress(token=token)
         return token
+
+    def _prune(self) -> None:
+        cutoff = time.monotonic() - KEEP_FINISHED_SECONDS
+        for key in [k for k, v in self._items.items() if v.ended_at is not None and v.ended_at < cutoff]:
+            del self._items[key]
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
 
     def get(self, post_id: str) -> Progress | None:
         with self._lock:
@@ -55,6 +72,7 @@ class ProgressHub:
             item = self._items.get(post_id)
             if item:
                 item.cancelled = True
+                item.ended_at = item.ended_at or time.monotonic()
                 item.version += 1
 
     def finish(self, post_id: str, token: str) -> None:
@@ -62,6 +80,7 @@ class ProgressHub:
             item = self._items.get(post_id)
             if item and item.token == token:
                 item.done = True
+                item.ended_at = time.monotonic()
                 item.version += 1
 
     def forget(self, post_id: str) -> None:

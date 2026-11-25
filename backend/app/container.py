@@ -15,6 +15,7 @@ from .services.progress import ProgressHub
 from .services.research import Research, build_research
 from .services.webfetch import Fetcher, SafeFetcher
 from .services.storage import MemoryStorage, Storage, SupabaseStorage
+from .services.tokens import TokenCipher
 
 
 @dataclass
@@ -28,6 +29,13 @@ class Services:
     # News search (趨勢情報) and the downloader for the pictures it finds. Tests swap both.
     research: Research | None = None
     fetcher: Fetcher = field(default_factory=SafeFetcher)
+    # Encrypts social access tokens at rest (built from settings when not given)
+    tokens: TokenCipher | None = None
+    last_token_refresh: float = 0.0  # monotonic time of the scheduler's last token-refresh sweep
+
+    def __post_init__(self) -> None:
+        if self.tokens is None:
+            self.tokens = TokenCipher(self.settings.token_encryption_key, self.settings.app_secret)
 
 
 def build_ai(settings: Settings) -> AIService:
@@ -84,6 +92,7 @@ def build_services(settings: Settings) -> Services:
                 settings.linkedin_client_secret,
                 settings.linkedin_redirect_uri,
                 settings.linkedin_api_version,
+                fetcher=SafeFetcher(timeout=30),
             ),
         }
     return Services(
